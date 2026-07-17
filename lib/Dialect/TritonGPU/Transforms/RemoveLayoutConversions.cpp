@@ -685,7 +685,12 @@ bool canBeRemat(Operation *op) {
   if (isa<scf::WhileOp, scf::ConditionOp>(op))
     return false;
 
-  return true;
+  // Allow rematerializing some ops even if they are not pure. For IfOp, any
+  // non-pure op in the slice will be evaluated separately anyway, so we should
+  // make the decision specifically for that op.
+  if (isa<LocalLoadOp, CatOp, scf::IfOp>(op))
+    return true;
+  return isPure(op);
 }
 
 void LayoutRematerialization::updateRematMapping(
