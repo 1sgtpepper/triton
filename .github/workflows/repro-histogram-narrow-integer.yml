@@ -2,6 +2,9 @@ name: Reproduce histogram narrow integer failure
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - repro/issue-10890-histogram-width
 
 permissions: read-all
 
