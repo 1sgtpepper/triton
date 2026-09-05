@@ -17,9 +17,11 @@ jobs:
       MAX_JOBS: "2"
       TRITON_BUILD_WITH_CLANG_LLD: "1"
       TRITON_BUILD_PROTON: "OFF"
-      TRITON_APPEND_CMAKE_ARGS: "-DTRITON_BUILD_UT=OFF -DTRITON_CODEGEN_BACKENDS=nvidia"
+      TRITON_APPEND_CMAKE_ARGS: "-DTRITON_BUILD_UT=OFF"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -45,13 +47,11 @@ jobs:
           git diff 1665fa9a96713f0157e5436f247369d83d0a6632 --stat > evidence/source-diff.txt
           python -m pip freeze > evidence/packages.txt
           find wheelhouse evidence -type f -exec sha256sum {} + > evidence-checksums.txt
-      - name: Upload compiler and generated-code evidence
+      - name: Preserve compiler evidence in the job log
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tmem-compiler-evidence
-          path: |
-            evidence/
-            evidence-checksums.txt
-            wheelhouse/
-          retention-days: 14
+        run: |
+          tar -czf compiler-evidence.tar.gz evidence evidence-checksums.txt
+          sha256sum compiler-evidence.tar.gz
+          echo 'BEGIN_COMPILER_EVIDENCE_BASE64'
+          base64 -w 76 compiler-evidence.tar.gz
+          echo 'END_COMPILER_EVIDENCE_BASE64'
