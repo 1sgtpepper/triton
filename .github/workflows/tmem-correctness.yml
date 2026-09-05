@@ -34,7 +34,7 @@ jobs:
           path: |
             ~/.triton
             wheelhouse
-          key: tmem-compiler-${{ runner.os }}-${{ runner.arch }}-cp312-${{ hashFiles('.github/workflows/tmem-correctness.yml') }}
+          key: tmem-compiler-${{ runner.os }}-${{ runner.arch }}-cp312-${{ hashFiles('.github/workflows/tmem-correctness.yml', '.github/tmem_alias_lifetime_control.patch') }}
       - name: Install compiler tools
         if: steps.compiler-cache.outputs.cache-hit != 'true'
         run: sudo apt-get update && sudo apt-get install -y clang lld
@@ -53,9 +53,45 @@ jobs:
             wheelhouse
           key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
       - name: Install the preserved compiler
+        id: install-compiler
         run: python -m pip install wheelhouse/*.whl
       - name: Compile the public Gluon cases
         run: python .github/tmem_correctness.py --compile-only --output-dir evidence
+      - name: Restore the alias lifetime control compiler
+        if: ${{ !cancelled() && steps.install-compiler.outcome == 'success' }}
+        id: control-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: control-wheelhouse
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}-alias-control
+      - name: Install control build tools
+        if: ${{ !cancelled() && steps.install-compiler.outcome == 'success' && steps.control-cache.outputs.cache-hit != 'true' }}
+        run: |
+          sudo apt-get install -y clang lld
+          python -m pip install 'setuptools>=40.8.0' 'cmake>=3.20,<4.0' 'ninja>=1.11.1' nanobind==2.10.2 wheel
+      - name: Build the isolated lifetime control
+        if: ${{ !cancelled() && steps.install-compiler.outcome == 'success' && steps.control-cache.outputs.cache-hit != 'true' }}
+        id: control-build
+        run: |
+          git apply --check .github/tmem_alias_lifetime_control.patch
+          git apply .github/tmem_alias_lifetime_control.patch
+          python -m pip wheel --no-build-isolation --no-deps -w control-wheelhouse .
+          git diff -- lib/Dialect/TritonNvidiaGPU/Transforms/TensorMemoryAllocation.cpp > control-wheelhouse/source.patch
+          git rev-parse HEAD > control-wheelhouse/build-revision.txt
+          git restore lib/Dialect/TritonNvidiaGPU/Transforms/TensorMemoryAllocation.cpp
+      - name: Preserve the control compiler
+        if: ${{ !cancelled() && steps.control-build.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: control-wheelhouse
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}-alias-control
+      - name: Compile the identical alias programs with the control
+        if: ${{ !cancelled() && (steps.control-cache.outputs.cache-hit == 'true' || steps.control-build.outcome == 'success') }}
+        run: |
+          python -m pip install --force-reinstall control-wheelhouse/*.whl
+          python .github/tmem_correctness.py --compile-only --case alias --output-dir evidence/alias-control
+          cp control-wheelhouse/build-revision.txt evidence/alias-control/compiler-build-revision.txt
+          cp control-wheelhouse/source.patch evidence/alias-control/source.patch
       - name: Record source and artifact identities
         if: always()
         run: |
@@ -66,7 +102,7 @@ jobs:
           fi
           git diff 1665fa9a96713f0157e5436f247369d83d0a6632 --stat > evidence/source-diff.txt
           python -m pip freeze > evidence/packages.txt
-          find wheelhouse evidence -type f -exec sha256sum {} + > evidence-checksums.txt
+          find wheelhouse control-wheelhouse evidence -type f -exec sha256sum {} + > evidence-checksums.txt
       - name: Preserve compiler evidence in the job log
         if: always()
         run: |
