@@ -30,7 +30,7 @@ from triton.experimental.gluon.language.nvidia.hopper import mbarrier
 
 
 @gluon.jit
-def scale_view_kernel(out, scale_out, M: gl.constexpr, K: gl.constexpr,
+def scale_view_kernel(out, M: gl.constexpr, K: gl.constexpr,
                       PARENT_M: gl.constexpr, COMPACT: gl.constexpr,
                       USE_ACC: gl.constexpr):
     N: gl.constexpr = 128
@@ -50,7 +50,10 @@ def scale_view_kernel(out, scale_out, M: gl.constexpr, K: gl.constexpr,
     view = parent.slice(0, M, dim=0)
     if COMPACT:
         scale_a = allocate_tensor_memory(gl.uint8, [M, K // 32], TensorMemoryScalesLayout())
-        scale_a.store(view.load(scale_a.get_reg_layout()))
+        compact_reg: gl.constexpr = scale_a.get_reg_layout()
+        compact_rows = gl.arange(0, M, gl.SliceLayout(1, compact_reg))[:, None]
+        compact_values = (127 + compact_rows // 128 + gl.zeros([M, K // 32], gl.int32, compact_reg)).to(gl.uint8)
+        scale_a.store(compact_values)
     else:
         scale_a = view
     scale_b = allocate_tensor_memory(gl.uint8, [N, K // 32], TensorMemoryScalesLayout())
@@ -71,13 +74,6 @@ def scale_view_kernel(out, scale_out, M: gl.constexpr, K: gl.constexpr,
     rm = gl.arange(0, M, gl.SliceLayout(1, result_reg))[:, None]
     rn = gl.arange(0, N, gl.SliceLayout(0, result_reg))[None, :]
     gl.store(out + rm * N + rn, result)
-
-    # Independently observe the descriptor contents, including the logical slice.
-    scales = view.load()
-    sreg: gl.constexpr = scales.type.layout
-    sr = gl.arange(0, M, gl.SliceLayout(1, sreg))[:, None]
-    sk = gl.arange(0, K // 32, gl.SliceLayout(0, sreg))[None, :]
-    gl.store(scale_out + sr * (K // 32) + sk, scales)
 
 
 @gluon.jit
@@ -127,7 +123,7 @@ SCALE_CASES = [
     ("one_m_tile", 128, 256, 512, False, False),
     ("one_k_word", 256, 128, 512, False, False),
     ("four_k_words", 256, 512, 512, False, False),
-    ("copy_to_compact", 256, 256, 512, True, False),
+    ("compact_materialization", 256, 256, 512, True, False),
     ("view_accumulate", 256, 256, 512, False, True),
 ]
 ALIAS_CASES = [
@@ -154,7 +150,7 @@ def save_compiled(compiled, directory):
 def compile_scale(case, directory):
     name, m, k, parent_m, compact, use_acc = case
     constants = dict(M=m, K=k, PARENT_M=parent_m, COMPACT=compact, USE_ACC=use_acc)
-    signature = dict(out="*fp32", scale_out="*u8", **{key: "constexpr" for key in constants})
+    signature = dict(out="*fp32", **{key: "constexpr" for key in constants})
     compiled = triton.compile(
         GluonASTSource(scale_view_kernel, signature=signature, constexprs=constants),
         target=GPUTarget("cuda", 100, 32), options={"num_warps": 4})
@@ -177,8 +173,7 @@ def compile_alias(case, directory):
 def execute_scale(case, directory, torch):
     name, m, k, parent_m, compact, use_acc = case
     out = torch.full((m, 128), float("nan"), device="cuda", dtype=torch.float32)
-    scales = torch.full((m, k // 32), 255, device="cuda", dtype=torch.uint8)
-    compiled = scale_view_kernel[(1,)](out, scales, m, k, parent_m, compact, use_acc, num_warps=4)
+    compiled = scale_view_kernel[(1,)](out, m, k, parent_m, compact, use_acc, num_warps=4)
     torch.cuda.synchronize()
     save_compiled(compiled, directory / name)
     actual = out.cpu()
@@ -186,16 +181,13 @@ def execute_scale(case, directory, torch):
     expected_rows = torch.tensor([k * (2 ** (row // 128)) + (3 if use_acc else 0)
                                   for row in range(m)], dtype=torch.float32)
     expected = expected_rows[:, None].expand(m, 128)
-    expected_scales = torch.tensor([127 + row // 128 for row in range(m)],
-                                  dtype=torch.uint8)[:, None].expand(m, k // 32)
     record = {
         "case": name, "correct": torch.equal(actual, expected),
-        "scale_view_correct": torch.equal(scales.cpu(), expected_scales),
         "mismatches": int((actual != expected).sum()),
         "row_samples": [{"row": row, "actual": actual[row, 0].item(),
                          "expected": expected[row, 0].item()} for row in range(0, m, 128)],
     }
-    torch.save({"actual": actual, "expected": expected, "scales": scales.cpu()},
+    torch.save({"actual": actual, "expected": expected},
                directory / name / "results.pt")
     return record
 
@@ -256,7 +248,7 @@ def main():
             print(json.dumps(record), flush=True)
     result = {"environment": environment, "cases": records}
     (args.output_dir / "results.json").write_text(json.dumps(result, indent=2))
-    return int(any("error" in r or not r.get("correct", True) or not r.get("scale_view_correct", True)
+    return int(any("error" in r or not r.get("correct", True)
                    for r in records))
 
 

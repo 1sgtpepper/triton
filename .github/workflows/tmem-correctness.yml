@@ -25,18 +25,35 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install compiler tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld
-      - name: Cache pinned build dependencies
-        uses: actions/cache@v4
+      - name: Verify the pinned compiler source
+        run: git diff --exit-code 1665fa9a96713f0157e5436f247369d83d0a6632 -- . ':!.github' ':!AGENTS.md'
+      - name: Restore the pinned compiler
+        id: compiler-cache
+        uses: actions/cache/restore@v4
         with:
-          path: ~/.triton
-          key: tmem-deps-${{ runner.os }}-${{ hashFiles('cmake/llvm-info.json', 'cmake/nvidia-toolchain-version.json') }}
+          path: |
+            ~/.triton
+            wheelhouse
+          key: tmem-compiler-${{ runner.os }}-${{ runner.arch }}-cp312-${{ hashFiles('.github/workflows/tmem-correctness.yml') }}
+      - name: Install compiler tools
+        if: steps.compiler-cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y clang lld
       - name: Build the exact source
+        if: steps.compiler-cache.outputs.cache-hit != 'true'
         run: |
           python -m pip install 'setuptools>=40.8.0' 'cmake>=3.20,<4.0' 'ninja>=1.11.1' nanobind==2.10.2 wheel
           python -m pip wheel --no-build-isolation --no-deps -w wheelhouse .
-          python -m pip install wheelhouse/*.whl
+          git rev-parse HEAD > wheelhouse/build-revision.txt
+      - name: Preserve the successful compiler before candidate tests
+        if: steps.compiler-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.triton
+            wheelhouse
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+      - name: Install the preserved compiler
+        run: python -m pip install wheelhouse/*.whl
       - name: Compile the public Gluon cases
         run: python .github/tmem_correctness.py --compile-only --output-dir evidence
       - name: Record source and artifact identities
@@ -44,6 +61,9 @@ jobs:
         run: |
           mkdir -p evidence
           git rev-parse HEAD > evidence/revision.txt
+          if test -f wheelhouse/build-revision.txt; then
+            cp wheelhouse/build-revision.txt evidence/compiler-build-revision.txt
+          fi
           git diff 1665fa9a96713f0157e5436f247369d83d0a6632 --stat > evidence/source-diff.txt
           python -m pip freeze > evidence/packages.txt
           find wheelhouse evidence -type f -exec sha256sum {} + > evidence-checksums.txt
