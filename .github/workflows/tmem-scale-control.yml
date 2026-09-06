@@ -1,0 +1,89 @@
+name: Validate tensor-memory scale address correction
+
+on:
+  push:
+    branches: [repro/tmem-scale-views-and-lifetimes]
+    paths:
+      - .github/tmem_scale_address_control.patch
+      - .github/workflows/tmem-scale-control.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      MAX_JOBS: "2"
+      TRITON_BUILD_WITH_CLANG_LLD: "1"
+      TRITON_BUILD_PROTON: "OFF"
+      TRITON_APPEND_CMAKE_ARGS: "-DTRITON_BUILD_UT=OFF"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify unchanged compiler and public programs
+        run: |
+          git diff --exit-code 1665fa9a96713f0157e5436f247369d83d0a6632 -- . ':!.github' ':!AGENTS.md'
+          echo '6a0e77bb7de17e7ec620ae263e682072d6751d42a4da1a26aff564ea2dec9178  .github/tmem_correctness.py' | sha256sum -c -
+      - name: Restore the previously verified baseline and toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.triton
+            wheelhouse
+          key: tmem-compiler-Linux-X64-cp312-8d60dada1a7097db9db86e2af0fc6047bfe44a17de7f35a1fc8b2eae831cf73a
+          fail-on-cache-miss: true
+      - name: Verify and replay baseline compilation
+        run: |
+          echo '9fef43c8823ea0bcb4790f59100fc86cedeab315dd14ddf7d77686ebdd7a41d3  wheelhouse/triton-3.8.0+gitd3f4c7e7-cp312-cp312-linux_x86_64.whl' | sha256sum -c -
+          python -m pip install wheelhouse/*.whl
+          python .github/tmem_correctness.py --compile-only --case scale --output-dir evidence/baseline
+      - name: Restore the isolated scale control compiler
+        id: scale-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: scale-wheelhouse
+          key: tmem-scale-control-Linux-X64-cp312-1665fa9a-${{ hashFiles('.github/workflows/tmem-scale-control.yml', '.github/tmem_scale_address_control.patch') }}
+      - name: Build the descriptor-address control
+        if: steps.scale-cache.outputs.cache-hit != 'true'
+        id: build
+        run: |
+          sudo apt-get update && sudo apt-get install -y clang lld
+          python -m pip install setuptools==84.0.0 cmake==3.31.10 ninja==1.13.2 nanobind==2.10.2 wheel==0.48.0 packaging==26.3
+          git apply --check .github/tmem_scale_address_control.patch
+          git apply .github/tmem_scale_address_control.patch
+          trap 'git restore third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/DotOpToLLVM/MMAv5.cpp' EXIT
+          python -m pip wheel --no-build-isolation --no-deps -w scale-wheelhouse .
+          git diff -- third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/DotOpToLLVM/MMAv5.cpp > scale-wheelhouse/source.patch
+          git rev-parse HEAD > scale-wheelhouse/build-revision.txt
+      - name: Preserve the successfully built control
+        if: steps.build.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: scale-wheelhouse
+          key: ${{ steps.scale-cache.outputs.cache-primary-key }}
+      - name: Compile the identical scale programs with the control
+        run: |
+          python -m pip install --force-reinstall scale-wheelhouse/*.whl
+          python .github/tmem_correctness.py --compile-only --case scale --output-dir evidence/scale-control
+          cp scale-wheelhouse/source.patch scale-wheelhouse/build-revision.txt evidence/scale-control/
+      - name: Preserve source and compiler evidence
+        if: always()
+        run: |
+          mkdir -p evidence scale-wheelhouse
+          git rev-parse HEAD > evidence/revision.txt
+          cp wheelhouse/build-revision.txt evidence/baseline-build-revision.txt
+          python -m pip freeze > evidence/packages.txt
+          git diff 1665fa9a96713f0157e5436f247369d83d0a6632 --stat > evidence/source-diff.txt
+          find wheelhouse scale-wheelhouse evidence -type f -exec sha256sum {} + > evidence-checksums.txt
+          tar -czf compiler-evidence.tar.gz evidence evidence-checksums.txt
+          sha256sum compiler-evidence.tar.gz
+          echo 'BEGIN_COMPILER_EVIDENCE_BASE64'
+          base64 -w 76 compiler-evidence.tar.gz
+          echo 'END_COMPILER_EVIDENCE_BASE64'

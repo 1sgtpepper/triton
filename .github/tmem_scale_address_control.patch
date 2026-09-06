@@ -1,0 +1,16 @@
+diff --git a/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/DotOpToLLVM/MMAv5.cpp b/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/DotOpToLLVM/MMAv5.cpp
+--- a/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/DotOpToLLVM/MMAv5.cpp
++++ b/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/DotOpToLLVM/MMAv5.cpp
+@@ -940,6 +940,12 @@
+                                            numRepKWords);
+     int offsetA = scaleIdxA * numColPerScaleBlockA;
+     int offsetB = scaleIdxB * numColPerScaleBlockB;
++    if (mxfpInstKind == mxfpKind::mxf8f6f4) {
++      offsetA =
++          ttng::getTMemSubSliceOffset(op.getAScale().getType(),
++                                    m * desc.mmaSizeM, 0) +
++          ttng::getTMemSubSliceOffset(op.getAScale().getType(), wordIdx * 4, 1);
++    }
+     if (useK96) {
+       offsetA =
+           ttng::getTMemSubSliceOffset(op.getAScale().getType(),
