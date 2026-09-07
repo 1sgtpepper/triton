@@ -1,0 +1,40 @@
+name: Export cached tensor-memory compilers
+
+on:
+  push:
+    branches: [repro/tmem-scale-views-and-lifetimes]
+    paths: [.github/workflows/gpu-artifacts.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/cache/restore@v4
+        with:
+          path: candidate-wheels
+          key: tmem-fixes-cp312-ed615fbee-1f33b120d
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.triton
+            wheelhouse
+          key: tmem-compiler-Linux-X64-cp312-8d60dada1a7097db9db86e2af0fc6047bfe44a17de7f35a1fc8b2eae831cf73a
+          fail-on-cache-miss: true
+      - name: Record wheel identities
+        run: find candidate-wheels wheelhouse -name '*.whl' -exec sha256sum {} + > checksums.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tensor-memory-wheels
+          path: |
+            candidate-wheels/**/*.whl
+            wheelhouse/*.whl
+            checksums.txt
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
