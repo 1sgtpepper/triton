@@ -1,0 +1,112 @@
+name: Validate tensor-memory fixes
+
+on:
+  push:
+    branches: [repro/tmem-scale-views-and-lifetimes]
+    paths: [.github/workflows/fix-candidates.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        revision:
+          - ed615fbee8a85b93b6e23499fa5e753cde2abeca
+          - 1f33b120daccd127b9f464623fb960f3d5ece536
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.revision }}
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: ${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: Check changed files with repository hooks
+        run: |
+          python -m pip install pre-commit
+          git diff --name-only HEAD^ HEAD > /tmp/changed-files.txt
+          mapfile -t changed < /tmp/changed-files.txt
+          pre-commit run --show-diff-on-failure --verbose --files "${changed[@]}"
+      - name: Show hook changes
+        if: failure()
+        run: git diff
+
+  compiler:
+    needs: format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      MAX_JOBS: "2"
+      CMAKE_BUILD_PARALLEL_LEVEL: "2"
+      TRITON_BUILD_WITH_CLANG_LLD: "1"
+      TRITON_BUILD_PROTON: "OFF"
+      TRITON_APPEND_CMAKE_ARGS: "-DTRITON_BUILD_UT=ON -DLLVM_LIT_ARGS=-j2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ed615fbee8a85b93b6e23499fa5e753cde2abeca
+          path: source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Reuse the pinned compiler toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.triton
+            wheelhouse
+          key: tmem-compiler-Linux-X64-cp312-8d60dada1a7097db9db86e2af0fc6047bfe44a17de7f35a1fc8b2eae831cf73a
+          fail-on-cache-miss: true
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          python -m pip install setuptools==84.0.0 cmake==3.31.10 ninja==1.13.2 nanobind==2.10.2 wheel==0.48.0 packaging==26.3 lit pytest
+          git -C source fetch --no-tags --depth=1 origin 1f33b120daccd127b9f464623fb960f3d5ece536
+      - name: Build and check both isolated fixes incrementally
+        working-directory: source
+        run: |
+          for revision in ed615fbee8a85b93b6e23499fa5e753cde2abeca 1f33b120daccd127b9f464623fb960f3d5ece536; do
+            git checkout --detach "$revision"
+            test "$(git rev-parse HEAD)" = "$revision"
+            output="$GITHUB_WORKSPACE/evidence/$revision"
+            mkdir -p "$output"
+            git rev-parse HEAD | tee "$output/revision.txt"
+            python -m pip install --no-build-isolation --no-deps -e . -v
+            make
+            build_dir=$(PYTHONPATH=./python python -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')
+            ninja -C "$build_dir" -j2 check-triton-lit-tests check-triton-unit-tests 2>&1 | tee "$output/tests.log"
+            python ../.github/tmem_correctness.py --compile-only --output-dir "$output/programs"
+            python -m pip wheel --no-build-isolation --no-deps -w "$GITHUB_WORKSPACE/candidate-wheels/$revision" .
+            git diff --exit-code
+          done
+      - name: Preserve exact candidate wheels
+        uses: actions/cache/save@v4
+        with:
+          path: candidate-wheels
+          key: tmem-fixes-cp312-ed615fbee-1f33b120d
+      - name: Record source and output identities
+        if: always()
+        run: |
+          mkdir -p evidence candidate-wheels
+          python -m pip freeze > evidence/packages.txt
+          find evidence candidate-wheels -type f -exec sha256sum {} + > checksums.txt
+          cat checksums.txt
+          tar -czf checks.tar.gz evidence checksums.txt
+          echo BEGIN_CHECKS_BASE64
+          base64 -w 76 checks.tar.gz
+          echo END_CHECKS_BASE64
