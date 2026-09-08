@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: aea30498dc77c5fd6c01b7ef4bb7309f3fdc1ccc
+          ref: 4d88b335639f834e743ba6110ae510da282d7452
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -43,7 +43,7 @@ jobs:
           key: ${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
       - name: Check exact revision and repository hooks
         run: |
-          test "$(git rev-parse HEAD)" = "aea30498dc77c5fd6c01b7ef4bb7309f3fdc1ccc"
+          test "$(git rev-parse HEAD)" = "4d88b335639f834e743ba6110ae510da282d7452"
           git fetch --no-tags --depth=1 origin 1665fa9a96713f0157e5436f247369d83d0a6632
           python -m pip install pre-commit
           mapfile -t changed < <(git diff --name-only 1665fa9a96713f0157e5436f247369d83d0a6632 HEAD)
