@@ -1,0 +1,105 @@
+name: Validate scale regression cleanup
+on:
+  push:
+    branches: [validation/tmem-review-cleanup-ci]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compiler:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [fixed, previous, original]
+    env:
+      MAX_JOBS: "2"
+      CMAKE_BUILD_PARALLEL_LEVEL: "2"
+      TRITON_BUILD_WITH_CLANG_LLD: "1"
+      TRITON_BUILD_PROTON: "OFF"
+      TRITON_APPEND_CMAKE_ARGS: "-DTRITON_BUILD_UT=ON -DLLVM_LIT_ARGS=-j2"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+      - uses: actions/checkout@v4
+        with:
+          ref: 36c2163ce2bbe7880424f546edee83523cc46902
+          path: source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.triton
+            wheelhouse
+          key: tmem-compiler-Linux-X64-cp312-8d60dada1a7097db9db86e2af0fc6047bfe44a17de7f35a1fc8b2eae831cf73a
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v4
+        if: matrix.variant == 'previous'
+        with:
+          path: candidate-wheels
+          key: tmem-fixes-cp312-ed615fbee-1f33b120d
+          fail-on-cache-miss: true
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: ${{ runner.os }}-${{ hashFiles('source/.pre-commit-config.yaml') }}
+      - name: Check complete PR hooks
+        if: matrix.variant == 'fixed'
+        working-directory: source
+        run: |
+          git fetch --no-tags --depth=1 origin 1665fa9a96713f0157e5436f247369d83d0a6632
+          python -m pip install pre-commit
+          mapfile -t changed < <(git diff --name-only 1665fa9a96713f0157e5436f247369d83d0a6632 HEAD)
+          pre-commit run --show-diff-on-failure --files "${changed[@]}"
+      - name: Build current compiler and run repository tests
+        if: matrix.variant == 'fixed'
+        working-directory: source
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          python -m pip install setuptools==84.0.0 cmake==3.31.10 ninja==1.13.2 nanobind==2.10.2 wheel==0.48.0 packaging==26.3 lit pytest
+          python -m pip install --no-build-isolation --no-deps -e . -v
+          make
+          build_dir=$(PYTHONPATH=./python python -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')
+          ninja -C "$build_dir" -j2 check-triton-lit-tests check-triton-unit-tests
+      - name: Install retained previous compiler
+        if: matrix.variant == 'previous'
+        working-directory: source
+        run: python -m pip install --no-deps ../candidate-wheels/ed615fbee8a85b93b6e23499fa5e753cde2abeca/*.whl
+      - name: Install retained original compiler
+        if: matrix.variant == 'original'
+        working-directory: source
+        run: python -m pip install --no-deps ../wheelhouse/*.whl
+      - name: Compile exact regression without a GPU
+        working-directory: source
+        run: |
+          python ../harness/.github/compile_scale_review.py ${{ matrix.variant }}
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scale-checks-${{ matrix.variant }}
+          path: source/evidence
+          retention-days: 3
+          if-no-files-found: error
+  lifetime-comment:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 5d44ca489ddd9268fc6a8e8036a967ce469732fb
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: ${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+      - run: |
+          python -m pip install pre-commit
+          pre-commit run --show-diff-on-failure --files lib/Dialect/TritonNvidiaGPU/Transforms/TensorMemoryAllocation.cpp
+          git diff --exit-code
