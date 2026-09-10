@@ -25,7 +25,7 @@ jobs:
           path: harness
       - uses: actions/checkout@v4
         with:
-          ref: 2a3c4a023f51b42f528e5ebecb15831058361f7d
+          ref: b2bc949758a267242c85c1b1d18aac25a1bbde06
           path: source
       - uses: actions/setup-python@v5
         with:
