@@ -1,0 +1,63 @@
+name: Reproduce scaled MMA loop failure
+on:
+  push:
+    branches: [repro/scaled-mma-loop]
+    paths: [.github/workflows/scaled-mma-repro.yml, .github/scaled-mma-repro/**]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  reproduce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      MAX_JOBS: "2"
+      CMAKE_BUILD_PARALLEL_LEVEL: "2"
+      TRITON_BUILD_WITH_CLANG_LLD: "1"
+      TRITON_BUILD_PROTON: "OFF"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+      - uses: actions/checkout@v4
+        with:
+          repository: triton-lang/triton
+          ref: 072983377d8cdcec4b1e0add05a9875bb618e1f7
+          path: source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.triton/llvm
+            ~/.triton/nvidia
+            ~/.triton/amd
+            ~/.triton/json
+            ~/.cache/pip
+          key: lowering-deps-${{ runner.os }}-${{ hashFiles('source/cmake/*json', 'source/pyproject.toml') }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            source/build
+            source/python/triton/_C
+          key: lowering-build-cp312-072983377d8c
+      - name: Build the pinned upstream compiler
+        working-directory: source
+        run: |
+          test "$(git rev-parse HEAD)" = "072983377d8cdcec4b1e0add05a9875bb618e1f7"
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          python -m pip install 'setuptools>=40.8.0' 'cmake>=3.20,<4.0' 'ninja>=1.11.1' nanobind==2.10.2 wheel packaging
+          python -m pip install --no-build-isolation --no-deps -e . -v
+          git diff --exit-code
+      - name: Compile issue kernels and controls for their reported targets
+        working-directory: source
+        run: python ../harness/.github/scaled-mma-repro/run.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scaled-mma-evidence
+          path: source/evidence
+          if-no-files-found: warn
+          retention-days: 14
