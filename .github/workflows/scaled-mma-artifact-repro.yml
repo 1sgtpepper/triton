@@ -1,0 +1,77 @@
+name: Check scaled MMA with the current upstream wheel
+on:
+  push:
+    branches: [repro/scaled-mma-loop]
+    paths: [.github/workflows/scaled-mma-artifact-repro.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  current-wheel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: triton-lang/triton
+          run-id: 36242138874
+          name: cibw-wheels-manylinux_2_28_x86_64-wheels-upload
+          path: wheels
+      - name: Install the wheel built from current main
+        run: |
+          python -m pip install wheels/*cp312*.whl
+          mkdir -p evidence
+          python -c 'import triton; print(triton.__version__, triton.__file__)' > evidence/compiler-version.txt
+          sha256sum wheels/*cp312*.whl > evidence/wheel-sha256.txt
+      - name: Compile all reported and control kernels
+        run: |
+          python .github/scaled-mma-repro/run.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          results = json.loads(Path('evidence/results.json').read_text())
+          assert all(row['returncode'] == 0 for row in results['results']), results
+          PY
+      - name: Run the complete accumulator regression file
+        run: |
+          git fetch --no-tags --depth=1 origin 31725112a83806247f942b6b26b3a6571634c92b
+          git show 31725112a83806247f942b6b26b3a6571634c92b:test/TritonGPU/accumulator-init.mlir > evidence/accumulator-init.mlir
+          sudo apt-get update
+          sudo apt-get install -y llvm-19-tools
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          from triton._C.libtriton import ir, passes
+          from triton.backends.compiler import GPUTarget
+          from triton.backends.nvidia.compiler import CUDABackend
+          fixture = Path('evidence/accumulator-init.mlir')
+          outputs = []
+          for i, text in enumerate(fixture.read_text().split('// -----')):
+              path = Path(f'evidence/part-{i}.mlir')
+              path.write_text(text)
+              context = ir.context()
+              ir.load_dialects(context)
+              CUDABackend(GPUTarget('cuda', 100, 32)).load_dialects(context)
+              module = ir.parse_mlir_module(str(path), context)
+              pm = ir.pass_manager(context)
+              passes.ttgpuir.add_optimize_accumulator_init(pm)
+              pm.run(module, 'scale_init')
+              outputs.append(str(module))
+          output = '\n// -----\n'.join(outputs)
+          Path('evidence/accumulator-init.out').write_text(output)
+          subprocess.run(['/usr/lib/llvm-19/bin/FileCheck', str(fixture)], input=output, text=True, check=True)
+          print('All accumulator-init FileCheck expectations passed, including both scale inputs.')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scaled-mma-current-wheel-evidence
+          path: evidence
+          if-no-files-found: error
+          retention-days: 14
