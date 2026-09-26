@@ -21,6 +21,43 @@ jobs:
           mkdir -p evidence
           python -c 'import triton; print(triton.__version__, triton.__file__)' > evidence/compiler-version.txt
           python .github/scaled-mma-repro/run.py
+      - name: Check the reduced regression and accumulator-read control
+        run: |
+          git fetch --no-tags --depth=1 origin 31725112a83806247f942b6b26b3a6571634c92b
+          git show 31725112a83806247f942b6b26b3a6571634c92b:test/TritonGPU/accumulator-init.mlir > evidence/regression-file.mlir
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess, sys
+          parts = [part for part in Path('evidence/regression-file.mlir').read_text().split('// -----')
+                   if '@preserve_mma_scale_initialization(' in part]
+          assert len(parts) == 1
+          script = '''
+          import sys
+          from triton._C.libtriton import ir, passes
+          from triton.backends.compiler import GPUTarget
+          from triton.backends.nvidia.compiler import CUDABackend
+          context = ir.context()
+          ir.load_dialects(context)
+          CUDABackend(GPUTarget("cuda", 100, 32)).load_dialects(context)
+          module = ir.parse_mlir_module(sys.argv[1], context)
+          pm = ir.pass_manager(context)
+          passes.ttgpuir.add_optimize_accumulator_init(pm)
+          pm.run(module)
+          print(module)
+          '''
+          import textwrap
+          for label, source, expected in [('unused', parts[0], 1),
+                                          ('read', parts[0].replace('%false, %true lhs', '%true, %true lhs'), 0)]:
+              path = Path('evidence/reduced-' + label + '.mlir')
+              path.write_text(source)
+              result = subprocess.run([sys.executable, '-c', textwrap.dedent(script), str(path)], capture_output=True, text=True)
+              path.with_suffix('.out').write_text(result.stdout)
+              path.with_suffix('.err').write_text(result.stderr)
+              assert result.returncode == expected, (label, result.returncode, result.stderr)
+              if expected:
+                  assert 'uninitialized alloc must have a mutable memdesc type' in result.stderr, result.stderr
+              print(label, 'returncode', result.returncode, 'expected', expected)
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
