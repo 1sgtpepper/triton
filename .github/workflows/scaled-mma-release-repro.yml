@@ -1,0 +1,30 @@
+name: Reproduce released scaled MMA failure
+on:
+  push:
+    branches: [repro/scaled-mma-loop]
+    paths: [.github/workflows/scaled-mma-release-repro.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  reproduce-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install triton==3.8.0
+      - name: Compile the reported release and retain version provenance
+        run: |
+          mkdir -p evidence
+          python -c 'import triton; print(triton.__version__, triton.__file__)' > evidence/compiler-version.txt
+          python .github/scaled-mma-repro/run.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scaled-mma-release-evidence
+          path: evidence
+          if-no-files-found: error
+          retention-days: 14
