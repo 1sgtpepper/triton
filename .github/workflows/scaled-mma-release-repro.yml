@@ -42,7 +42,7 @@ jobs:
           module = ir.parse_mlir_module(sys.argv[1], context)
           pm = ir.pass_manager(context)
           passes.ttgpuir.add_optimize_accumulator_init(pm)
-          pm.run(module)
+          pm.run(module, "scale_init")
           print(module)
           '''
           import textwrap
