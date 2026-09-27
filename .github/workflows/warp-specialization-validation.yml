@@ -34,8 +34,6 @@ jobs:
           test/Hopper/WarpSpecialization/ws_preexisting_unsupported_ops.mlir
           test/Hopper/WarpSpecialization/ws_unsupported_ops_fallback.mlir
           third_party/nvidia/hopper/lib/Transforms/WarpSpecialization.cpp
-          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/CodePartitionUtility.h
-          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSCodePartition.cpp
 
       - name: Build Triton and triton-opt
         run: |
@@ -47,7 +45,7 @@ jobs:
         run: |
           python3 -m pip install pytest
           python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py \
-            -k 'test_compile_only_ws_gather_falls_back or test_compile_only_ws_atomic_falls_back'
+            -k 'test_compile_only_ws_gather_falls_back or test_compile_only_ws_atomic_falls_back or test_compile_only_ws_producer_atomic_cas_falls_back'
 
       - name: Run Hopper warp-specialization lit tests
         run: |
