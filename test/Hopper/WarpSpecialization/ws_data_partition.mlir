@@ -21,9 +21,13 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
         // CHECK: %[[#GA1:]] = tt.load {{.*}} : tensor<64x64x!tt.ptr<f16>
         // CHECK: %[[#GA2:]] = tt.load {{.*}} : tensor<64x64x!tt.ptr<f16>
         %8 = tt.load %2 {async_task_id = array<i32: 0>} : tensor<128x64x!tt.ptr<f16>, #blocked>
+        %idx = arith.constant dense<1> {async_task_id = array<i32: 0>} : tensor<128x64xi32, #blocked>
+        // CHECK: tt.gather {{.*}} {async_task_id = array<i32: 0>, axis = 1 : i32} : (tensor<64x64xf16, #blocked>, tensor<64x64xi32, #blocked>) -> tensor<64x64xf16, #blocked>
+        // CHECK: tt.gather {{.*}} {async_task_id = array<i32: 0>, axis = 1 : i32} : (tensor<64x64xf16, #blocked>, tensor<64x64xi32, #blocked>) -> tensor<64x64xf16, #blocked>
+        %g = tt.gather %8[%idx] {async_task_id = array<i32: 0>, axis = 1 : i32} : (tensor<128x64xf16, #blocked>, tensor<128x64xi32, #blocked>) -> tensor<128x64xf16, #blocked>
         // CHECK: %[[#LA1:]] = ttg.local_alloc %[[#GA1]]
         // CHECK: %[[#LA2:]] = ttg.local_alloc %[[#GA2]]
-        %9 = ttg.local_alloc %8 {async_task_id = array<i32: 1, 2>} : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
+        %9 = ttg.local_alloc %g {async_task_id = array<i32: 1, 2>} : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
         // CHECK: %[[#GB:]] = tt.load {{.*}} : tensor<64x256x!tt.ptr<f16>
         %10 = tt.load %3 {async_task_id = array<i32: 0>} : tensor<64x256x!tt.ptr<f16>, #blocked1>
         // CHECK: %[[#LB:]] = ttg.local_alloc %[[#GB]]

@@ -4,6 +4,7 @@
 #include "mlir/Transforms/Passes.h"
 #include "nvidia/hopper/include/Transforms/Passes.h"
 #include "nvidia/hopper/lib/Transforms/WarpSpecialization/CodePartitionUtility.h"
+#include "nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.h"
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
@@ -17,7 +18,6 @@ namespace mlir {
 
 void doTaskPartition(triton::FuncOp &funcOp, unsigned numWarpGroups);
 int doTaskIdPropagate(triton::FuncOp &funcOp);
-bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups);
 void doCodePartition(triton::FuncOp &funcOp, unsigned numBuffers);
 void doTokenLowering(triton::FuncOp &funcOp, unsigned numConsumerGroups);
 
@@ -55,6 +55,15 @@ public:
     if (hasElse)
       return;
 
+    bool hasPreexistingTaskIds = false;
+    funcOp.walk([&](Operation *op) {
+      hasPreexistingTaskIds |= op->hasAttr("async_task_id");
+    });
+    auto clearGeneratedTaskIds = [&] {
+      if (!hasPreexistingTaskIds)
+        funcOp.walk([](Operation *op) { op->removeAttr("async_task_id"); });
+    };
+
     OpBuilder builder(funcOp);
     auto moduleOp = funcOp->getParentOfType<ModuleOp>();
     unsigned numWarpGroups = 3;
@@ -63,6 +72,19 @@ public:
     for (; numWarpGroups >= 2; numWarpGroups--) {
       // Partition key ops into multiple async tasks.
       doTaskPartition(funcOp, numWarpGroups);
+
+      // The token lowerer has no completion protocol for regular loads used as
+      // producers. Leave this kernel on the ordinary lowering path instead of
+      // creating an AsyncLoad producer channel that cannot be completed.
+      bool hasUnsupportedProducerLoad = false;
+      funcOp.walk([&](triton::LoadOp loadOp) {
+        hasUnsupportedProducerLoad |= hasAsyncTaskId(loadOp, 0);
+      });
+      if (hasUnsupportedProducerLoad) {
+        clearGeneratedTaskIds();
+        return;
+      }
+
       if (dumpIntermediateSteps) {
         ::mlir::triton::tools::mlirDumpsOrDbgs()
             << "// -----// WarpSpec internal IR Dump After: doTaskPartition\n"
@@ -70,8 +92,12 @@ public:
       }
       // Propagate taskId.
       int retCode = doTaskIdPropagate(funcOp);
-      if (retCode == -1)
+      if (retCode == -1) {
+        if (hasPreexistingTaskIds)
+          break;
+        clearGeneratedTaskIds();
         continue;
+      }
       if (dumpIntermediateSteps) {
         ::mlir::triton::tools::mlirDumpsOrDbgs()
             << "// -----// WarpSpec internal IR Dump After: doTaskIdPropagate\n"
@@ -79,7 +105,8 @@ public:
       }
 
       // Partition ops into parallel sub ops.
-      if (doDataPartition(funcOp, numWarpGroups - 1)) {
+      switch (doDataPartition(funcOp, numWarpGroups - 1)) {
+      case DataPartitionResult::Success:
         if (dumpIntermediateSteps) {
           ::mlir::triton::tools::mlirDumpsOrDbgs()
               << "// -----// WarpSpec internal IR Dump After: doDataPartition\n"
@@ -87,8 +114,17 @@ public:
         }
         success = true;
         break;
+      case DataPartitionResult::CannotPartition:
+        if (hasPreexistingTaskIds)
+          break;
+        // Retry from the unannotated IR so task partitioning can reseed the
+        // consumer role for the reduced number of warp groups.
+        clearGeneratedTaskIds();
+        continue;
+      case DataPartitionResult::Failure:
+        break;
       }
-      // Clear async_task.
+      break;
     }
     if (!success) {
       mlir::emitError(

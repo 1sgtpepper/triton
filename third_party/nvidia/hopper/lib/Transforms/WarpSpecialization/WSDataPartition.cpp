@@ -1,4 +1,5 @@
 #include "Utility.h"
+#include "WSDataPartition.h"
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "nvidia/hopper/include/Transforms/Passes.h"
@@ -273,8 +274,15 @@ static bool getBackwardSliceToPartition(Value v,
         currentDim--;
     }
 
-    // Recusively process operands backwards.
-    if (op->hasTrait<OpTrait::Elementwise>() ||
+    // Gather can be sliced only when its index axis remains whole in each
+    // task. Its source and indices can otherwise be sliced together.
+    if (auto gatherOp = dyn_cast<GatherOp>(op)) {
+      if (gatherOp.getAxis() == currentDim)
+        return false;
+      for (Value operand : op->getOperands())
+        if (!getBackwardSliceToPartition(operand, partitionScheme, currentDim))
+          return false;
+    } else if (op->hasTrait<OpTrait::Elementwise>() ||
         isa<arith::ConstantOp, arith::ExtSIOp, arith::ExtUIOp, arith::ExtFOp,
             BroadcastOp, ExpandDimsOp, MakeRangeOp, SplatOp, ConvertLayoutOp,
             triton::gpu::LocalAllocOp, LoadOp, TransOp, MemDescTransOp,
@@ -851,7 +859,13 @@ static Operation *sliceOp(Operation *op, int offset, IRMapping &mappings,
 
   // slice operands first
   Operation *newOp;
-  if ((dim == DataPartitionScheme::noOpPartitionDim) ||
+  if (auto gatherOp = dyn_cast<GatherOp>(op)) {
+    assert(gatherOp.getAxis() != dim &&
+           "gather axis cannot be the partitioned dimension");
+    for (Value operand : op->getOperands())
+      sliceOp(operand, offset, mappings, reverseMappings, partitionScheme);
+    newOp = cloneAndSetResultType(op);
+  } else if ((dim == DataPartitionScheme::noOpPartitionDim) ||
       op->hasTrait<OpTrait::Elementwise>() ||
       isa<ConvertLayoutOp, BroadcastOp, SplatOp, ExpandDimsOp, FpToFpOp,
           AtomicRMWOp, LocalAllocOp, SplitOp, JoinOp, ReshapeOp>(op)) {
@@ -1301,14 +1315,15 @@ static bool doDeepCleanup(triton::FuncOp &funcOp,
   return true;
 }
 
-bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups) {
+DataPartitionResult doDataPartition(triton::FuncOp &funcOp,
+                                    unsigned numConsumerGroups) {
   DataPartitionScheme partitionScheme;
   if (!computePartitionScheme(funcOp, partitionScheme)) {
     if (numConsumerGroups > 1) {
       LDBG("computePartitionScheme failed when requested");
-      return false;
+      return DataPartitionResult::CannotPartition;
     }
-    return true;
+    return DataPartitionResult::Success;
   }
 
   // Rewrite the rematerialized ops.
@@ -1356,7 +1371,7 @@ bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups) {
   // Make sure original ops are not used
   if (!doDeepCleanup(funcOp, partitionScheme)) {
     LDBG("final cleanup failed");
-    return false;
+    return DataPartitionResult::Failure;
   }
 
   // Make sure original ops are not used
@@ -1367,7 +1382,7 @@ bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups) {
   });
 
   fixTaskId(funcOp);
-  return true;
+  return DataPartitionResult::Success;
 }
 
 #define GEN_PASS_DEF_NVGPUTESTWSDATAPARTITION
@@ -1380,9 +1395,16 @@ public:
       NVGPUTestWSDataPartitionPass>::NVGPUTestWSDataPartitionBase;
 
   void runOnFuncOp(triton::FuncOp funcOp) {
-    if (numWarpGroups > 2)
-      if (!doDataPartition(funcOp, numWarpGroups - 1))
+    if (numWarpGroups > 2) {
+      switch (doDataPartition(funcOp, numWarpGroups - 1)) {
+      case DataPartitionResult::Success:
+        return;
+      case DataPartitionResult::CannotPartition:
+      case DataPartitionResult::Failure:
         signalPassFailure();
+        break;
+      }
+    }
   }
 
   void runOnOperation() override {
