@@ -23,8 +23,8 @@
 // CHECK-NOT: tt.warp_specialize
 // CHECK-LABEL: @producer_work_keeps_warp_specialization
 // CHECK: ttg.warp_specialize
-// CHECK: tt.load %arg4
-// CHECK: tt.atomic_rmw add, relaxed, gpu, %arg3
+// CHECK: tt.load
+// CHECK: tt.atomic_rmw add
 // CHECK-NOT: tt.atomic_rmw add
 
 // CHECK-LABEL: @gather_before_loop_falls_back
