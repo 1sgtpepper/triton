@@ -34,7 +34,7 @@ jobs:
           third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
           third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.h
           third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSTaskIdPropagate.cpp
-          test/Hopper/WarpSpecialization/ws_partition_unhandled_ops.mlir
+          python/test/unit/language/test_compile_only.py
 
       - name: Build Triton and triton-opt
         run: |
@@ -42,5 +42,8 @@ jobs:
           build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
           ninja -C "$build_dir" triton-opt
 
-      - name: Run Hopper warp-specialization lit tests
-        run: lit -v test/Hopper/WarpSpecialization
+      - name: Run warp-specialization compile-only regressions
+        run: |
+          python3 -m pip install pytest
+          python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py \
+            -k 'test_compile_only_ws_gather_falls_back_to_one_consumer or test_compile_only_ws_unused_atomic_stays_in_each_consumer'
