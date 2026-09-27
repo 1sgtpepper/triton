@@ -16,6 +16,44 @@ def topk_kernel(K: tl.constexpr):
     tl.topk(x, K)
 
 
+@triton.jit
+def gather_before_dot_ws_kernel(
+    a_ptr,
+    b_ptr,
+    c_ptr,
+    M: tl.constexpr,
+    N: tl.constexpr,
+    K: tl.constexpr,
+    USE_GATHER: tl.constexpr,
+):
+    om = tl.arange(0, M)
+    on = tl.arange(0, N)
+    ok = tl.arange(0, K)
+    acc = tl.zeros([M, N], dtype=tl.float32)
+    for i in tl.range(0, 4, warp_specialize=True):
+        a = tl.load(a_ptr + om[:, None] * K + ok[None, :] + i * M * K)
+        b = tl.load(b_ptr + ok[:, None] * N + on[None, :] + i * K * N)
+        if USE_GATHER:
+            idx = tl.full([M, K], 1, tl.int32)
+            a = tl.gather(a, idx, axis=1)
+        acc += tl.dot(a, b)
+    tl.store(c_ptr + om[:, None] * N + on[None, :], acc)
+
+
+@triton.jit
+def atomic_after_dot_ws_kernel(a_ptr, b_ptr, c_ptr, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr):
+    om = tl.arange(0, M)
+    on = tl.arange(0, N)
+    ok = tl.arange(0, K)
+    acc = tl.zeros([M, N], dtype=tl.float32)
+    for i in tl.range(0, 4, warp_specialize=True):
+        a = tl.load(a_ptr + om[:, None] * K + ok[None, :] + i * M * K)
+        b = tl.load(b_ptr + ok[:, None] * N + on[None, :] + i * K * N)
+        acc += tl.dot(a, b)
+        tl.atomic_add(c_ptr + om[:, None] * N + on[None, :], acc)
+    tl.store(c_ptr + om[:, None] * N + on[None, :], acc)
+
+
 @pytest.mark.parametrize(
     "k, error",
     [
@@ -40,6 +78,52 @@ def test_topk_invalid_k(k, error):
 def test_topk_valid_k(k):
     src = ASTSource(fn=topk_kernel, signature={"K": "constexpr"}, constexprs={"K": k})
     triton.compile(src, target=GPUTarget("cuda", 90, 32))
+
+
+def test_compile_only_ws_gather_uses_ordinary_load_path():
+    src = ASTSource(
+        fn=gather_before_dot_ws_kernel,
+        signature={"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp32"},
+        constexprs={"M": 128, "N": 128, "K": 128, "USE_GATHER": True},
+    )
+    compiled = triton.compile(
+        src,
+        target=GPUTarget("cuda", 90, 32),
+        options={"num_warps": 4, "num_stages": 3},
+    )
+    assert "tt.gather" in compiled.asm["ttgir"]
+    assert "ttg.warp_specialize" not in compiled.asm["ttgir"]
+
+
+def test_compile_only_ws_ordinary_load_channel_uses_ordinary_pipeline():
+    src = ASTSource(
+        fn=gather_before_dot_ws_kernel,
+        signature={"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp32"},
+        constexprs={"M": 128, "N": 128, "K": 128, "USE_GATHER": False},
+    )
+    compiled = triton.compile(
+        src,
+        target=GPUTarget("cuda", 90, 32),
+        options={"num_warps": 4, "num_stages": 3},
+    )
+    assert "tt.load" in compiled.asm["ttgir"]
+    assert "ttng.warp_group_dot" in compiled.asm["ttgir"]
+    assert "ttg.warp_specialize" not in compiled.asm["ttgir"]
+
+
+def test_compile_only_ws_atomic_uses_ordinary_load_path():
+    src = ASTSource(
+        fn=atomic_after_dot_ws_kernel,
+        signature={"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp32"},
+        constexprs={"M": 128, "N": 128, "K": 128},
+    )
+    compiled = triton.compile(
+        src,
+        target=GPUTarget("cuda", 90, 32),
+        options={"num_warps": 4, "num_stages": 3},
+    )
+    assert "tt.atomic_rmw" in compiled.asm["ttgir"]
+    assert "ttg.warp_specialize" not in compiled.asm["ttgir"]
 
 
 def test_compile_only_sort_keeps_comparisons_boolean() -> None:
