@@ -85,6 +85,16 @@ public:
 
       bool hasUnsupportedGather = false;
       bool hasUnsupportedAtomic = false;
+      // Match the complete roles seeded by doTaskPartition; partial sets make
+      // sliceOp interpret an atomic as a different role or reject its arity.
+      SmallVector<AsyncTaskId, 3> producerTaskIds{0};
+      SmallVector<AsyncTaskId, 3> consumerTaskIds;
+      SmallVector<AsyncTaskId, 3> allTaskIds{0};
+      for (unsigned taskId = 1; taskId < numWarpGroups; ++taskId) {
+        auto asyncTaskId = static_cast<AsyncTaskId>(taskId);
+        consumerTaskIds.push_back(asyncTaskId);
+        allTaskIds.push_back(asyncTaskId);
+      }
       // Data partition follows loop initial values and yields, and rewrites the
       // function as a whole. Keep this preflight function-local rather than
       // duplicating the partitioner's dimension-aware slice analysis here.
@@ -97,7 +107,9 @@ public:
           hasUnsupportedAtomic = true;
         } else if (isa<triton::AtomicRMWOp>(op)) {
           auto taskIds = getAsyncTaskIds(op);
-          hasUnsupportedAtomic |= taskIds.size() != 1 || taskIds.front() != 0;
+          hasUnsupportedAtomic |= taskIds != producerTaskIds &&
+                                  taskIds != consumerTaskIds &&
+                                  taskIds != allTaskIds;
         }
       });
 
