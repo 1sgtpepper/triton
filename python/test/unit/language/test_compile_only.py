@@ -55,8 +55,7 @@ def atomic_after_dot_ws_kernel(a_ptr, b_ptr, c_ptr, M: tl.constexpr, N: tl.const
 
 
 @triton.jit
-def atomic_cas_producer_ws_kernel(a_ptr, b_ptr, c_ptr, cas_ptr, M: tl.constexpr, N: tl.constexpr,
-                                  K: tl.constexpr):
+def atomic_cas_producer_ws_kernel(a_ptr, b_ptr, c_ptr, cas_ptr, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr):
     om = tl.arange(0, M)
     on = tl.arange(0, N)
     ok = tl.arange(0, K)
