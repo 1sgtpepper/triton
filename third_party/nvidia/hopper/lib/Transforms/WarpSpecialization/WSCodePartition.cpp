@@ -1224,14 +1224,6 @@ void foldLocalLoads(triton::FuncOp funcOp) {
 
 } // namespace
 
-bool hasAsyncLoadProducerChannel(triton::FuncOp &funcOp, unsigned numBuffers) {
-  SmallVector<std::unique_ptr<Channel>> channels;
-  collectAsyncChannels(channels, funcOp, numBuffers);
-  return llvm::any_of(channels, [](const auto &channel) {
-    return isa<triton::LoadOp>(channel->getSrcOp());
-  });
-}
-
 void doCodePartition(triton::FuncOp &funcOp, unsigned numBuffers) {
   // Step 1: collect all communications between producers and consumers.
   SmallVector<std::unique_ptr<Channel>> channelsOrigin;

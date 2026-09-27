@@ -132,7 +132,6 @@ Operation *optimizeTMALoads(OpBuilderWithAsyncTaskIds &builder,
                             Operation *headConsumer);
 void specializeRegion(triton::FuncOp funcOp, unsigned requestedRegisters);
 void invalidateWarpSpecializeBarriers(triton::FuncOp funcOp);
-bool hasAsyncLoadProducerChannel(triton::FuncOp &funcOp, unsigned numBuffers);
 
 } // namespace mlir
 

@@ -98,13 +98,10 @@ public:
         }
       });
 
-      // The partitioner and token lowering cannot safely represent these cases.
-      // Keep the function on the regular software-pipeline path instead of
-      // entering data partitioning, which can otherwise abort or drop effects.
+      // The partitioner cannot represent live gathers or non-producer atomics.
+      // Fall back before data partitioning can abort or omit an atomic effect.
       const char *unsupportedWork = nullptr;
-      if (hasAsyncLoadProducerChannel(funcOp, numStages))
-        unsupportedWork = "ordinary-load producer channel";
-      else if (hasUnsupportedGather)
+      if (hasUnsupportedGather)
         unsupportedWork = "live gather in warp-specialized function";
       else if (hasUnsupportedAtomic)
         unsupportedWork = "atomic not confined to the producer task";
