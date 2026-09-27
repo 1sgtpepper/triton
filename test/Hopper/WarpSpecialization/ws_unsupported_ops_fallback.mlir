@@ -53,7 +53,7 @@ module attributes {"ttg.num-warps" = 4 : i32, ttg.target = "cuda:90"} {
     %c1 = arith.constant 1 : i32
     %indices = arith.constant dense<1> : tensor<128x64xi32, #blocked>
     %init = arith.constant dense<0.000000e+00> : tensor<128x256xf32, #mma>
-    %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x256xf32, #mma> {
+    %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x256xf32, #mma> : i32 {
       %a = tt.descriptor_load %arg0[%i, %c0] : !tt.tensordesc<128x64xf16> -> tensor<128x64xf16, #blocked>
       %gathered = tt.gather %a[%indices] {axis = 1 : i32} : (tensor<128x64xf16, #blocked>, tensor<128x64xi32, #blocked>) -> tensor<128x64xf16, #blocked>
       %a_smem = ttg.local_alloc %gathered : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
@@ -72,7 +72,7 @@ module attributes {"ttg.num-warps" = 4 : i32, ttg.target = "cuda:90"} {
     %c0 = arith.constant 0 : i32
     %c1 = arith.constant 1 : i32
     %init = arith.constant dense<0.000000e+00> : tensor<128x256xf32, #mma>
-    %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x256xf32, #mma> {
+    %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x256xf32, #mma> : i32 {
       %a = tt.descriptor_load %arg0[%i, %c0] : !tt.tensordesc<128x64xf16> -> tensor<128x64xf16, #blocked>
       %a_smem = ttg.local_alloc %a : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
       %b = tt.descriptor_load %arg1[%c0, %i] : !tt.tensordesc<64x256xf16> -> tensor<64x256xf16, #blocked1>
@@ -94,7 +94,7 @@ module attributes {"ttg.num-warps" = 4 : i32, ttg.target = "cuda:90"} {
     %c0 = arith.constant 0 : i32
     %c1 = arith.constant 1 : i32
     %init = arith.constant dense<0.000000e+00> : tensor<128x256xf32, #mma>
-    %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x256xf32, #mma> {
+    %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x256xf32, #mma> : i32 {
       %a = tt.descriptor_load %arg0[%i, %c0] : !tt.tensordesc<128x64xf16> -> tensor<128x64xf16, #blocked>
       %a_smem = ttg.local_alloc %a : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
       %b = tt.descriptor_load %arg1[%c0, %i] : !tt.tensordesc<64x256xf16> -> tensor<64x256xf16, #blocked1>
@@ -113,7 +113,7 @@ module attributes {"ttg.num-warps" = 4 : i32, ttg.target = "cuda:90"} {
     %c0 = arith.constant 0 : i32
     %c1 = arith.constant 1 : i32
     %init = arith.constant dense<0.000000e+00> : tensor<128x256xf32, #mma>
-    %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x256xf32, #mma> {
+    %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x256xf32, #mma> : i32 {
       %offset = tt.load %arg4 : !tt.ptr<i32>
       %coordinate = tt.atomic_rmw add, relaxed, gpu, %arg3, %c1 : (!tt.ptr<i32>, i32) -> i32
       %index = arith.addi %offset, %coordinate : i32
@@ -137,7 +137,7 @@ module attributes {"ttg.num-warps" = 4 : i32, ttg.target = "cuda:90"} {
     %a = tt.descriptor_load %arg0[%c0, %c0] : !tt.tensordesc<128x64xf16> -> tensor<128x64xf16, #blocked>
     %gathered = tt.gather %a[%indices] {axis = 1 : i32} : (tensor<128x64xf16, #blocked>, tensor<128x64xi32, #blocked>) -> tensor<128x64xf16, #blocked>
     %init = arith.constant dense<0.000000e+00> : tensor<128x256xf32, #mma>
-    %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x256xf32, #mma> {
+    %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x256xf32, #mma> : i32 {
       %a_smem = ttg.local_alloc %gathered : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
       %b = tt.descriptor_load %arg1[%c0, %i] : !tt.tensordesc<64x256xf16> -> tensor<64x256xf16, #blocked1>
       %b_smem = ttg.local_alloc %b : (tensor<64x256xf16, #blocked1>) -> !ttg.memdesc<64x256xf16, #shared, #smem>
@@ -154,7 +154,7 @@ module attributes {"ttg.num-warps" = 4 : i32, ttg.target = "cuda:90"} {
     %c0 = arith.constant 0 : i32
     %c1 = arith.constant 1 : i32
     %init = arith.constant dense<0.000000e+00> : tensor<128x256xf32, #mma>
-    %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x256xf32, #mma> {
+    %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x256xf32, #mma> : i32 {
       %a = tt.descriptor_load %arg0[%i, %c0] : !tt.tensordesc<128x64xf16> -> tensor<128x64xf16, #blocked>
       %a_smem = ttg.local_alloc %a : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
       %b = tt.descriptor_load %arg1[%c0, %i] : !tt.tensordesc<64x256xf16> -> tensor<64x256xf16, #blocked1>
