@@ -1,4 +1,5 @@
 // RUN: triton-opt %s --nvgpu-warp-specialization=num-stages=2 | FileCheck %s
+// RUN: triton-opt %s --nvgpu-test-ws-task-partition=num-warp-groups=3 --nvgpu-test-taskid-propagate=num-warp-groups=3 | FileCheck %s --check-prefix=TASK-ID
 
 // CHECK-LABEL: @gather_falls_back
 // CHECK-NOT: ttg.warp_specialize
@@ -41,6 +42,21 @@
 // CHECK-NOT: tt.atomic_rmw fadd
 // CHECK-NOT: ttg.warp_specialize
 // CHECK-NOT: tt.warp_specialize
+// CHECK-LABEL: @consumer_atomic_keeps_warp_specialization
+// CHECK-NOT: tt.atomic_rmw fadd
+// CHECK: ttg.warp_specialize
+// CHECK-NOT: tt.atomic_rmw fadd
+// CHECK: partition0
+// CHECK: tt.atomic_rmw fadd
+// CHECK: tt.descriptor_store
+// CHECK-NOT: tt.atomic_rmw fadd
+// CHECK: partition1
+// CHECK: tt.atomic_rmw fadd
+// CHECK: tt.descriptor_store
+// CHECK-NOT: tt.atomic_rmw fadd
+
+// TASK-ID-LABEL: @consumer_atomic_keeps_warp_specialization
+// TASK-ID: tt.atomic_rmw fadd{{.*}}async_task_id = array<i32: 1, 2>
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 4], order = [1, 0]}>
@@ -182,6 +198,45 @@ module attributes {"ttg.num-warps" = 4 : i32, ttg.target = "cuda:90"} {
     %out = arith.truncf %acc : tensor<128x256xf32, #mma> to tensor<128x256xf16, #mma>
     %out_blocked = ttg.convert_layout %out : tensor<128x256xf16, #mma> -> tensor<128x256xf16, #blocked1>
     tt.descriptor_store %arg2[%c0, %c0], %out_blocked : !tt.tensordesc<128x256xf16>, tensor<128x256xf16, #blocked1>
+    tt.return
+  }
+
+  tt.func @consumer_atomic_keeps_warp_specialization(%arg0: !tt.ptr<f16>, %arg1: !tt.ptr<f16>, %arg2: !tt.ptr<f16>, %atomic_ptr: !tt.ptr<f32>, %result_ptr: !tt.ptr<f16>) {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    %c4 = arith.constant 4 : i32
+    %c64 = arith.constant 64 : i32
+    %c128 = arith.constant 128 : i32
+    %c256 = arith.constant 256 : i32
+    %c512 = arith.constant 512 : i32
+    %c1_i64 = arith.constant 1 : i64
+    %c256_i64 = arith.constant 256 : i64
+    %a_desc = tt.make_tensor_descriptor %arg0, [%c128, %c256], [%c256_i64, %c1_i64] : <f16>, <128x64xf16, #shared>
+    %b_desc = tt.make_tensor_descriptor %arg1, [%c256, %c256], [%c256_i64, %c1_i64] : <f16>, <64x256xf16, #shared>
+    %out_desc = tt.make_tensor_descriptor %arg2, [%c128, %c256], [%c256_i64, %c1_i64] : <f16>, <128x256xf16, #shared>
+    %result_desc = tt.make_tensor_descriptor %result_ptr, [%c512, %c256], [%c256_i64, %c1_i64] : <f16>, <128x256xf16, #shared>
+    %init = arith.constant dense<0.000000e+00> : tensor<128x256xf32, #mma>
+    %atomic_ptrs = tt.splat %atomic_ptr : !tt.ptr<f32> -> tensor<128x256x!tt.ptr<f32>, #blocked1>
+    %mask = arith.constant dense<true> : tensor<128x256xi1, #blocked1>
+    %m = arith.constant 0 : i32
+    %n = arith.constant 0 : i32
+    %acc = scf.for %i = %c0 to %c4 step %c1 iter_args(%iter = %init) -> tensor<128x256xf32, #mma> : i32 {
+      %k_offset = arith.muli %i, %c64 : i32
+      %row_offset = arith.muli %i, %c128 : i32
+      %a = tt.descriptor_load %a_desc[%m, %k_offset] : !tt.tensordesc<128x64xf16, #shared> -> tensor<128x64xf16, #blocked>
+      %a_smem = ttg.local_alloc %a : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
+      %b = tt.descriptor_load %b_desc[%k_offset, %n] : !tt.tensordesc<64x256xf16, #shared> -> tensor<64x256xf16, #blocked1>
+      %b_smem = ttg.local_alloc %b : (tensor<64x256xf16, #blocked1>) -> !ttg.memdesc<64x256xf16, #shared, #smem>
+      %dot = ttng.warp_group_dot %a_smem, %b_smem, %iter {inputPrecision = 0 : i32} : !ttg.memdesc<128x64xf16, #shared, #smem> * !ttg.memdesc<64x256xf16, #shared, #smem> -> tensor<128x256xf32, #mma>
+      %value = ttg.convert_layout %dot : tensor<128x256xf32, #mma> -> tensor<128x256xf32, #blocked1>
+      %old = tt.atomic_rmw fadd, relaxed, gpu, %atomic_ptrs, %value, %mask : (tensor<128x256x!tt.ptr<f32>, #blocked1>, tensor<128x256xf32, #blocked1>, tensor<128x256xi1, #blocked1>) -> tensor<128x256xf32, #blocked1>
+      %old_f16 = arith.truncf %old : tensor<128x256xf32, #blocked1> to tensor<128x256xf16, #blocked1>
+      tt.descriptor_store %result_desc[%row_offset, %n], %old_f16 : !tt.tensordesc<128x256xf16, #shared>, tensor<128x256xf16, #blocked1>
+      scf.yield %dot : tensor<128x256xf32, #mma>
+    } {tt.num_stages = 2 : i32, tt.warp_specialize}
+    %out = arith.truncf %acc : tensor<128x256xf32, #mma> to tensor<128x256xf16, #mma>
+    %out_blocked = ttg.convert_layout %out : tensor<128x256xf16, #mma> -> tensor<128x256xf16, #blocked1>
+    tt.descriptor_store %out_desc[%m, %n], %out_blocked : !tt.tensordesc<128x256xf16, #shared>, tensor<128x256xf16, #blocked1>
     tt.return
   }
 }
