@@ -9,7 +9,7 @@ module attributes {"ttg.num-warps" = 4 : i32, ttg.target = "cuda:90"} {
   tt.func @preexisting_ordinary_load_channel(%ptr: tensor<128x64x!tt.ptr<f16>, #blocked>) {
     %c0 = arith.constant 0 : i32
     %c1 = arith.constant 1 : i32
-    scf.for %i = %c0 to %c1 step %c1 {
+    scf.for %i = %c0 to %c1 step %c1 : i32 {
       %load = tt.load %ptr {async_task_id = array<i32: 0>} : tensor<128x64x!tt.ptr<f16>, #blocked>
       %buffer = ttg.local_alloc %load {async_task_id = array<i32: 1, 2>} : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
       scf.yield
