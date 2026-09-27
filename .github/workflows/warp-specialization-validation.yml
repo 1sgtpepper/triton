@@ -1,0 +1,56 @@
+name: Warp specialization validation
+
+on:
+  push:
+    branches:
+      - validation/warp-specialization-fallback
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install pre-commit
+        run: python3 -m pip install pre-commit
+
+      - name: Check changed files
+        run: >-
+          python3 -m pre_commit run --files
+          python/test/unit/language/test_compile_only.py
+          python/test/unit/language/test_warp_specialization.py
+          test/Hopper/WarpSpecialization/ws_preexisting_async_load.mlir
+          test/Hopper/WarpSpecialization/ws_unsupported_ops_fallback.mlir
+          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization.cpp
+          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/CodePartitionUtility.h
+          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSCodePartition.cpp
+
+      - name: Build Triton and triton-opt
+        run: |
+          MAX_JOBS=2 make dev-install
+          build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
+          ninja -C "$build_dir" triton-opt
+
+      - name: Run compile-only regressions
+        run: |
+          python3 -m pip install pytest
+          python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py \
+            -k 'test_compile_only_ws_gather_uses_ordinary_load_path or test_compile_only_ws_ordinary_load_channel_uses_ordinary_pipeline or test_compile_only_ws_atomic_uses_ordinary_load_path'
+
+      - name: Run Hopper warp-specialization lit tests
+        run: |
+          build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
+          cd "$build_dir"
+          lit -v test/Hopper/WarpSpecialization
