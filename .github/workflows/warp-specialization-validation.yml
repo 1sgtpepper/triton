@@ -31,7 +31,7 @@ jobs:
           python3 -m pre_commit run --files
           python/test/unit/language/test_compile_only.py
           python/test/unit/language/test_warp_specialization.py
-          test/Hopper/WarpSpecialization/ws_preexisting_async_load.mlir
+          test/Hopper/WarpSpecialization/ws_preexisting_unsupported_ops.mlir
           test/Hopper/WarpSpecialization/ws_unsupported_ops_fallback.mlir
           third_party/nvidia/hopper/lib/Transforms/WarpSpecialization.cpp
           third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/CodePartitionUtility.h
@@ -47,7 +47,7 @@ jobs:
         run: |
           python3 -m pip install pytest
           python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py \
-            -k 'test_compile_only_ws_gather_uses_ordinary_load_path or test_compile_only_ws_ordinary_load_channel_uses_ordinary_pipeline or test_compile_only_ws_atomic_uses_ordinary_load_path'
+            -k 'test_compile_only_ws_gather_falls_back or test_compile_only_ws_atomic_falls_back'
 
       - name: Run Hopper warp-specialization lit tests
         run: |
