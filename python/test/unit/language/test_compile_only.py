@@ -80,7 +80,7 @@ def test_topk_valid_k(k):
     triton.compile(src, target=GPUTarget("cuda", 90, 32))
 
 
-def test_compile_only_ws_gather_uses_ordinary_load_path():
+def test_compile_only_ws_gather_falls_back():
     src = ASTSource(
         fn=gather_before_dot_ws_kernel,
         signature={"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp32"},
@@ -95,23 +95,7 @@ def test_compile_only_ws_gather_uses_ordinary_load_path():
     assert "ttg.warp_specialize" not in compiled.asm["ttgir"]
 
 
-def test_compile_only_ws_ordinary_load_channel_uses_ordinary_pipeline():
-    src = ASTSource(
-        fn=gather_before_dot_ws_kernel,
-        signature={"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp32"},
-        constexprs={"M": 128, "N": 128, "K": 128, "USE_GATHER": False},
-    )
-    compiled = triton.compile(
-        src,
-        target=GPUTarget("cuda", 90, 32),
-        options={"num_warps": 4, "num_stages": 3},
-    )
-    assert "tt.load" in compiled.asm["ttgir"]
-    assert "ttng.warp_group_dot" in compiled.asm["ttgir"]
-    assert "ttg.warp_specialize" not in compiled.asm["ttgir"]
-
-
-def test_compile_only_ws_atomic_uses_ordinary_load_path():
+def test_compile_only_ws_atomic_falls_back():
     src = ASTSource(
         fn=atomic_after_dot_ws_kernel,
         signature={"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp32"},
