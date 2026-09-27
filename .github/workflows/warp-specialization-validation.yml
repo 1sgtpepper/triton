@@ -1,0 +1,46 @@
+name: Warp specialization validation
+
+on:
+  push:
+    branches:
+      - validation/ws-partition-fallback
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install formatting checker
+        run: python3 -m pip install pre-commit
+
+      - name: Check changed files
+        run: >-
+          python3 -m pre_commit run --files
+          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization.cpp
+          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/Utility.h
+          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
+          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.h
+          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSTaskIdPropagate.cpp
+          test/Hopper/WarpSpecialization/ws_partition_unhandled_ops.mlir
+
+      - name: Build Triton and triton-opt
+        run: |
+          MAX_JOBS=2 make dev-install
+          build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
+          ninja -C "$build_dir" triton-opt
+
+      - name: Run Hopper warp-specialization lit tests
+        run: lit -v test/Hopper/WarpSpecialization
