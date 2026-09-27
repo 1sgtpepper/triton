@@ -89,22 +89,25 @@ public:
       // function as a whole. Keep this preflight function-local rather than
       // duplicating the partitioner's dimension-aware slice analysis here.
       funcOp.walk([&](Operation *op) {
-        auto taskIds = getAsyncTaskIds(op);
         if (isa<triton::GatherOp>(op)) {
           hasUnsupportedGather |= !op->getResult(0).use_empty();
         }
-        if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(op)) {
+        if (isa<triton::AtomicCASOp>(op)) {
+          // AtomicCAS has no slice implementation, even for producer-only IDs.
+          hasUnsupportedAtomic = true;
+        } else if (isa<triton::AtomicRMWOp>(op)) {
+          auto taskIds = getAsyncTaskIds(op);
           hasUnsupportedAtomic |= taskIds.size() != 1 || taskIds.front() != 0;
         }
       });
 
-      // The partitioner cannot represent live gathers or non-producer atomics.
+      // The partitioner cannot represent live gathers or unsupported atomics.
       // Fall back before data partitioning can abort or omit an atomic effect.
       const char *unsupportedWork = nullptr;
       if (hasUnsupportedGather)
         unsupportedWork = "live gather in warp-specialized function";
       else if (hasUnsupportedAtomic)
-        unsupportedWork = "atomic not confined to the producer task";
+        unsupportedWork = "unsupported atomic in warp-specialized function";
 
       if (unsupportedWork) {
         if (hasPreexistingTaskIds) {
