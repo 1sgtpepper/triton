@@ -55,6 +55,11 @@ public:
     if (hasElse)
       return;
 
+    bool hasPreexistingTaskIds = false;
+    funcOp.walk([&](Operation *op) {
+      hasPreexistingTaskIds |= op->hasAttr("async_task_id");
+    });
+
     OpBuilder builder(funcOp);
     auto moduleOp = funcOp->getParentOfType<ModuleOp>();
     unsigned numWarpGroups = 3;
@@ -76,6 +81,46 @@ public:
         ::mlir::triton::tools::mlirDumpsOrDbgs()
             << "// -----// WarpSpec internal IR Dump After: doTaskIdPropagate\n"
             << moduleOp << "\n\n\n";
+      }
+
+      bool hasUnsupportedGather = false;
+      bool hasUnsupportedAtomic = false;
+      // Data partition follows loop initial values and yields, and rewrites the
+      // function as a whole. Keep this preflight function-local rather than
+      // duplicating the partitioner's dimension-aware slice analysis here.
+      funcOp.walk([&](Operation *op) {
+        auto taskIds = getAsyncTaskIds(op);
+        if (isa<triton::GatherOp>(op)) {
+          hasUnsupportedGather |= !op->getResult(0).use_empty();
+        }
+        if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(op)) {
+          hasUnsupportedAtomic |= taskIds.size() != 1 || taskIds.front() != 0;
+        }
+      });
+
+      // The partitioner and token lowering cannot safely represent these cases.
+      // Keep the function on the regular software-pipeline path instead of
+      // entering data partitioning, which can otherwise abort or drop effects.
+      const char *unsupportedWork = nullptr;
+      if (hasAsyncLoadProducerChannel(funcOp, numStages))
+        unsupportedWork = "ordinary-load producer channel";
+      else if (hasUnsupportedGather)
+        unsupportedWork = "live gather in warp-specialized function";
+      else if (hasUnsupportedAtomic)
+        unsupportedWork = "atomic not confined to the producer task";
+
+      if (unsupportedWork) {
+        if (hasPreexistingTaskIds) {
+          funcOp.emitError()
+              << "warp specialization cannot fall back from " << unsupportedWork
+              << " with preexisting async_task_id attributes";
+          return signalPassFailure();
+        }
+        funcOp.walk([](Operation *op) { op->removeAttr("async_task_id"); });
+        funcOp.walk([](scf::ForOp loop) {
+          loop->removeAttr(triton::kWarpSpecializeAttrName);
+        });
+        return;
       }
 
       // Partition ops into parallel sub ops.

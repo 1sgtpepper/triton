@@ -25,6 +25,141 @@ def _assert_clc_ws_ir(compiled):
     assert ttgir.count("ttng.clc_try_cancel ") == 1
 
 
+@triton.jit
+def unsupported_ws_repro_kernel(
+    a_ptr,
+    b_ptr,
+    out_ptr,
+    atomic_ptr,
+    M: tl.constexpr,
+    N: tl.constexpr,
+    K: tl.constexpr,
+    USE_GATHER: tl.constexpr,
+    USE_ATOMIC: tl.constexpr,
+    WARP_SPECIALIZE: tl.constexpr,
+):
+    om = tl.arange(0, M)
+    on = tl.arange(0, N)
+    ok = tl.arange(0, K)
+    acc = tl.zeros([M, N], dtype=tl.float32)
+    for i in tl.range(0, 4, warp_specialize=WARP_SPECIALIZE):
+        a = tl.load(a_ptr + om[:, None] * K + ok[None, :] + i * M * K)
+        b = tl.load(b_ptr + ok[:, None] * N + on[None, :] + i * K * N)
+        if USE_GATHER:
+            idx = tl.full([M, K], 1, tl.int32)
+            a = tl.gather(a, idx, axis=1)
+        acc += tl.dot(a, b)
+        if USE_ATOMIC:
+            tl.atomic_add(atomic_ptr + om[:, None] * N + on[None, :], acc)
+    tl.store(out_ptr + om[:, None] * N + on[None, :], acc)
+
+
+@pytest.mark.skipif(is_hip() or not is_hopper(), reason="Requires Hopper CUDA")
+def test_warp_specialize_gather_fallback_matches_plain_pipeline():
+    M = N = K = 128
+    torch.manual_seed(11952)
+    a = torch.randn((4, M, K), device="cuda", dtype=torch.float16)
+    b = torch.randn((4, K, N), device="cuda", dtype=torch.float16)
+    out_ws = torch.empty((M, N), device="cuda", dtype=torch.float32)
+    out_plain = torch.empty_like(out_ws)
+    unused_atomic = torch.empty_like(out_ws)
+
+    kernel_ws = unsupported_ws_repro_kernel[(1, )](
+        a,
+        b,
+        out_ws,
+        unused_atomic,
+        M,
+        N,
+        K,
+        True,
+        False,
+        True,
+        num_warps=4,
+        num_stages=3,
+    )
+    unsupported_ws_repro_kernel[(1, )](
+        a,
+        b,
+        out_plain,
+        unused_atomic,
+        M,
+        N,
+        K,
+        True,
+        False,
+        False,
+        num_warps=4,
+        num_stages=3,
+    )
+    if is_compile_warmup():
+        return
+
+    assert "tt.gather" in kernel_ws.asm["ttgir"]
+    assert "ttg.warp_specialize" not in kernel_ws.asm["ttgir"]
+    expected = torch.zeros_like(out_ws)
+    for i in range(4):
+        selected = a[i, :, 1:2].float().expand(M, K)
+        expected += selected @ b[i].float()
+    torch.testing.assert_close(out_ws, expected, atol=5e-2, rtol=5e-2)
+    torch.testing.assert_close(out_ws, out_plain, atol=5e-2, rtol=5e-2)
+
+
+@pytest.mark.skipif(is_hip() or not is_hopper(), reason="Requires Hopper CUDA")
+def test_warp_specialize_atomic_fallback_preserves_effects():
+    M = N = K = 128
+    torch.manual_seed(11954)
+    a = torch.randn((4, M, K), device="cuda", dtype=torch.float16)
+    b = torch.randn((4, K, N), device="cuda", dtype=torch.float16)
+    out_ws = torch.empty((M, N), device="cuda", dtype=torch.float32)
+    out_plain = torch.empty_like(out_ws)
+    atomic_ws = torch.zeros_like(out_ws)
+    atomic_plain = torch.zeros_like(out_ws)
+
+    kernel_ws = unsupported_ws_repro_kernel[(1, )](
+        a,
+        b,
+        out_ws,
+        atomic_ws,
+        M,
+        N,
+        K,
+        False,
+        True,
+        True,
+        num_warps=4,
+        num_stages=3,
+    )
+    unsupported_ws_repro_kernel[(1, )](
+        a,
+        b,
+        out_plain,
+        atomic_plain,
+        M,
+        N,
+        K,
+        False,
+        True,
+        False,
+        num_warps=4,
+        num_stages=3,
+    )
+    if is_compile_warmup():
+        return
+
+    assert "tt.atomic_rmw" in kernel_ws.asm["ttgir"]
+    assert "ttg.warp_specialize" not in kernel_ws.asm["ttgir"]
+    expected_output = torch.zeros_like(out_ws)
+    expected_atomic = torch.zeros_like(out_ws)
+    for i in range(4):
+        expected_output += a[i].float() @ b[i].float()
+        expected_atomic += expected_output
+    torch.testing.assert_close(out_ws, expected_output, atol=5e-2, rtol=5e-2)
+    torch.testing.assert_close(atomic_ws, expected_atomic, atol=5e-2, rtol=5e-2)
+    torch.testing.assert_close(out_ws, out_plain, atol=5e-2, rtol=5e-2)
+    torch.testing.assert_close(atomic_ws, atomic_plain, atol=5e-2, rtol=5e-2)
+
+
 @pytest.mark.skipif(is_hip(), reason="warp specialization is not supported on hip devices")
 @pytest.mark.skipif(not is_hopper_or_blackwell(), reason="Requires Hopper or Blackwell")
 @pytest.mark.disable_warmup(reason="compiles an explicit IR fixture rather than a JIT launch")
