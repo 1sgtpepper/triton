@@ -117,6 +117,7 @@ module attributes {"ttg.num-warps" = 4 : i32, ttg.target = "cuda:90"} {
     %c256 = arith.constant 256 : i32
     %c1_i64 = arith.constant 1 : i64
     %c256_i64 = arith.constant 256 : i64
+    %indices = arith.constant dense<1> : tensor<128x64xi32, #blocked>
     %a_desc = tt.make_tensor_descriptor %arg0, [%c128, %c256], [%c256_i64, %c1_i64] : <f16>, <128x64xf16, #shared>
     %b_desc = tt.make_tensor_descriptor %arg1, [%c256, %c256], [%c256_i64, %c1_i64] : <f16>, <64x256xf16, #shared>
     %c_desc = tt.make_tensor_descriptor %arg2, [%c128, %c256], [%c256_i64, %c1_i64] : <f16>, <128x256xf16, #shared>
@@ -129,6 +130,7 @@ module attributes {"ttg.num-warps" = 4 : i32, ttg.target = "cuda:90"} {
       %coordinate = tt.atomic_rmw add, relaxed, gpu, %arg3, %c64 : (!tt.ptr<i32>, i32) -> i32
       %index = arith.addi %offset, %coordinate : i32
       %a = tt.descriptor_load %a_desc[%a_m, %index] : !tt.tensordesc<128x64xf16, #shared> -> tensor<128x64xf16, #blocked>
+      %unused_gather = tt.gather %a[%indices] {axis = 1 : i32} : (tensor<128x64xf16, #blocked>, tensor<128x64xi32, #blocked>) -> tensor<128x64xf16, #blocked>
       %a_smem = ttg.local_alloc %a : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
       %b = tt.descriptor_load %b_desc[%index, %b_n] : !tt.tensordesc<64x256xf16, #shared> -> tensor<64x256xf16, #blocked1>
       %b_smem = ttg.local_alloc %b : (tensor<64x256xf16, #blocked1>) -> !ttg.memdesc<64x256xf16, #shared, #smem>
