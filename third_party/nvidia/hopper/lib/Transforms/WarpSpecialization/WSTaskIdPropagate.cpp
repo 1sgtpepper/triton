@@ -4,6 +4,7 @@
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Analysis/SliceAnalysis.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
@@ -43,8 +44,9 @@ int doTaskIdPropagate(triton::FuncOp &funcOp) {
         llvm_unreachable("Lattice not found.");
       taskIds = taskIds.meet(taskIds, lattice->getValue());
     }
-    // Get the union of the operands
-    if (op->getNumResults() == 0) {
+    // Effectful ops need a task context even when no result carries one.
+    if (op->getNumResults() == 0 ||
+        (taskIds.isUninitialized() && !isMemoryEffectFree(op))) {
       for (auto operand : op->getOperands()) {
         auto *lattice = solver.lookupState<ttg::TaskIdLattice>(operand);
         if (!lattice)

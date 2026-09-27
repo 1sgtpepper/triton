@@ -1,3 +1,4 @@
+#include "WSDataPartition.h"
 #include "Utility.h"
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
@@ -327,7 +328,7 @@ static bool getBackwardSliceToPartition(Value v,
                                        currentDim))
         return false;
     } else {
-      llvm_unreachable("Unexpected op");
+      return false;
     }
   } else {
     assert(isa<BlockArgument>(v) && "value is not an operation or block ");
@@ -1301,14 +1302,15 @@ static bool doDeepCleanup(triton::FuncOp &funcOp,
   return true;
 }
 
-bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups) {
+DataPartitionResult doDataPartition(triton::FuncOp &funcOp,
+                                    unsigned numConsumerGroups) {
   DataPartitionScheme partitionScheme;
   if (!computePartitionScheme(funcOp, partitionScheme)) {
     if (numConsumerGroups > 1) {
       LDBG("computePartitionScheme failed when requested");
-      return false;
+      return DataPartitionResult::CannotPartition;
     }
-    return true;
+    return DataPartitionResult::Success;
   }
 
   // Rewrite the rematerialized ops.
@@ -1356,7 +1358,7 @@ bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups) {
   // Make sure original ops are not used
   if (!doDeepCleanup(funcOp, partitionScheme)) {
     LDBG("final cleanup failed");
-    return false;
+    return DataPartitionResult::Failure;
   }
 
   // Make sure original ops are not used
@@ -1367,7 +1369,7 @@ bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups) {
   });
 
   fixTaskId(funcOp);
-  return true;
+  return DataPartitionResult::Success;
 }
 
 #define GEN_PASS_DEF_NVGPUTESTWSDATAPARTITION
@@ -1380,9 +1382,16 @@ public:
       NVGPUTestWSDataPartitionPass>::NVGPUTestWSDataPartitionBase;
 
   void runOnFuncOp(triton::FuncOp funcOp) {
-    if (numWarpGroups > 2)
-      if (!doDataPartition(funcOp, numWarpGroups - 1))
+    if (numWarpGroups > 2) {
+      switch (doDataPartition(funcOp, numWarpGroups - 1)) {
+      case DataPartitionResult::Success:
+        return;
+      case DataPartitionResult::CannotPartition:
+      case DataPartitionResult::Failure:
         signalPassFailure();
+        break;
+      }
+    }
   }
 
   void runOnOperation() override {
