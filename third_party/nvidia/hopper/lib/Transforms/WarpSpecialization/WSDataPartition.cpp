@@ -1329,8 +1329,7 @@ static bool hasUnsupportedAtomicRMW(triton::FuncOp &funcOp,
     for (Operation *parent = atomicOp->getParentOp(); parent;
          parent = parent->getParentOp()) {
       if (auto loop = dyn_cast<scf::ForOp>(parent))
-        inSpecializedLoop |=
-            loop->hasAttr(triton::kWarpSpecializeAttrName);
+        inSpecializedLoop |= loop->hasAttr(triton::kWarpSpecializeAttrName);
     }
     bool inPartitionScheme = partitionScheme.ops.contains(atomicOp);
     if (!inSpecializedLoop && !inPartitionScheme && taskIds.empty())
@@ -1342,14 +1341,12 @@ static bool hasUnsupportedAtomicRMW(triton::FuncOp &funcOp,
       // A failed scheme may already contain a partitioned atomic; do not retry
       // with a partial view of its partition path.
       unsupported = inPartitionScheme ||
-                    (!isProducer &&
-                     !(numConsumerGroups == 1 && isConsumer));
+                    (!isProducer && !(numConsumerGroups == 1 && isConsumer));
       return;
     }
 
     if (!inPartitionScheme) {
-      unsupported = !isProducer &&
-                    !(numConsumerGroups == 1 && isConsumer);
+      unsupported = !isProducer && !(numConsumerGroups == 1 && isConsumer);
       return;
     }
     if ((!isProducer && !isConsumer) ||
@@ -1369,9 +1366,9 @@ static bool hasUnsupportedAtomicRMW(triton::FuncOp &funcOp,
     if (dim == DataPartitionScheme::noOpPartitionDim) {
       // Only addition combines independent K-partition dot results.
       RMWOp rmwOp = atomicOp.getAtomicRmwOp();
-      unsupported = !partitionScheme.atomicRMWsOnKPartitionPath.contains(
-                        atomicOp) ||
-                    (rmwOp != RMWOp::ADD && rmwOp != RMWOp::FADD);
+      unsupported =
+          !partitionScheme.atomicRMWsOnKPartitionPath.contains(atomicOp) ||
+          (rmwOp != RMWOp::ADD && rmwOp != RMWOp::FADD);
       return;
     }
     // The partitioner clones every op in this closure for each consumer, but
@@ -1387,9 +1384,9 @@ bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups,
   unsupportedAtomicRMW = false;
   DataPartitionScheme partitionScheme;
   if (!computePartitionScheme(funcOp, partitionScheme)) {
-    unsupportedAtomicRMW = hasUnsupportedAtomicRMW(
-        funcOp, partitionScheme, numConsumerGroups,
-        PartitionSchemeStatus::Failed);
+    unsupportedAtomicRMW =
+        hasUnsupportedAtomicRMW(funcOp, partitionScheme, numConsumerGroups,
+                                PartitionSchemeStatus::Failed);
     if (unsupportedAtomicRMW)
       return false;
     if (numConsumerGroups > 1) {
