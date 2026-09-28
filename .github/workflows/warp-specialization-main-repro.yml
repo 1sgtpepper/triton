@@ -31,14 +31,19 @@ jobs:
         env:
           TRITON_MAIN_SHA: 4fd7cc5cfd0a84acfeb5dadb1578dffa409903fc
         run: |
-          test "$(git rev-parse HEAD^)" = "$TRITON_MAIN_SHA"
-          git diff --quiet "$TRITON_MAIN_SHA" -- third_party/nvidia/hopper
+          test "$(git merge-base HEAD "$TRITON_MAIN_SHA")" = "$TRITON_MAIN_SHA"
+          git diff --exit-code "$TRITON_MAIN_SHA" HEAD -- . \
+            ':(exclude).github/workflows/warp-specialization-main-repro.yml' \
+            ':(exclude)python/test/unit/language/test_ws_main_repro.py'
 
       - name: Check changed files
         env:
           TRITON_MAIN_SHA: 4fd7cc5cfd0a84acfeb5dadb1578dffa409903fc
         run: |
-          python3 -m pre_commit run --from-ref "$TRITON_MAIN_SHA" --to-ref HEAD --verbose
+          python3 -m pre_commit run --from-ref "$TRITON_MAIN_SHA" --to-ref HEAD --verbose || {
+            git diff -- python/test/unit/language/test_ws_main_repro.py
+            exit 1
+          }
 
       - name: Build Triton and triton-opt
         run: MAX_JOBS=2 make dev-install
