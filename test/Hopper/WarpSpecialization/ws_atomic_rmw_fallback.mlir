@@ -132,7 +132,7 @@ module attributes {"ttg.num-warps" = 4 : i32, ttg.target = "cuda:90"} {
     %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x256xf32, #mma> : i32 {
       %offsets = tt.atomic_rmw add, relaxed, gpu, %counter_ptrs, %one, %mask : (tensor<128x64x!tt.ptr<i32>, #blocked>, tensor<128x64xi32, #blocked>, tensor<128x64xi1, #blocked>) -> tensor<128x64xi32, #blocked>
       %load_ptrs = tt.addptr %a_ptrs, %offsets : tensor<128x64x!tt.ptr<f16>, #blocked>, tensor<128x64xi32, #blocked>
-      %a = tt.load %load_ptrs : tensor<128x64x!tt.ptr<f16>, #blocked> -> tensor<128x64xf16, #blocked>
+      %a = tt.load %load_ptrs : tensor<128x64x!tt.ptr<f16>, #blocked>
       %a_smem = ttg.local_alloc %a : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
       %b = tt.descriptor_load %b_desc[%c0, %i] : !tt.tensordesc<64x256xf16> -> tensor<64x256xf16, #blocked1>
       %b_smem = ttg.local_alloc %b : (tensor<64x256xf16, #blocked1>) -> !ttg.memdesc<64x256xf16, #shared, #smem>
