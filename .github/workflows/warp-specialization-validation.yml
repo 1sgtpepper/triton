@@ -1,0 +1,51 @@
+name: Warp specialization integration validation
+
+on:
+  push:
+    branches:
+      - validation/ws-gather-atomic-integration
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install validation tools
+        run: python3 -m pip install pre-commit pytest
+
+      - name: Check changed files
+        run: |
+          git remote set-url origin https://github.com/triton-lang/triton.git
+          git fetch origin +refs/heads/main:refs/remotes/origin/main
+          python3 -m pre_commit run --from-ref origin/main --to-ref HEAD --verbose
+
+      - name: Build Triton and triton-opt
+        run: |
+          MAX_JOBS=2 make dev-install
+          build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
+          ninja -C "$build_dir" triton-opt
+
+      - name: Run Gather and AtomicRMW compile-only regressions
+        run: >-
+          python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py
+          -k 'test_compile_only_ws_gather_falls_back or test_compile_only_ws_atomic_rmw_falls_back'
+
+      - name: Run Hopper warp-specialization lit tests
+        run: |
+          build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
+          cd "$build_dir"
+          lit -v test/Hopper/WarpSpecialization
