@@ -66,7 +66,8 @@ def _disable_core_dumps():
 
 def _run_compiler(issue, warp_specialize):
     return subprocess.run(
-        [sys.executable, __file__, "--compile", issue, str(warp_specialize)],
+        [sys.executable, __file__, "--compile", issue,
+         str(warp_specialize)],
         capture_output=True,
         text=True,
         env=os.environ.copy(),
