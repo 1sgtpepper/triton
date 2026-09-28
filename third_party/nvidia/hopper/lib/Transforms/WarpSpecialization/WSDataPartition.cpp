@@ -1,3 +1,4 @@
+#include "nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.h"
 #include "Utility.h"
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
@@ -1379,27 +1380,22 @@ static bool hasUnsupportedAtomicRMW(triton::FuncOp &funcOp,
   return unsupported;
 }
 
-bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups,
-                     bool &unsupportedAtomicRMW) {
-  unsupportedAtomicRMW = false;
+DataPartitionResult doDataPartition(triton::FuncOp &funcOp,
+                                    unsigned numConsumerGroups) {
   DataPartitionScheme partitionScheme;
   if (!computePartitionScheme(funcOp, partitionScheme)) {
-    unsupportedAtomicRMW =
-        hasUnsupportedAtomicRMW(funcOp, partitionScheme, numConsumerGroups,
-                                PartitionSchemeStatus::Failed);
-    if (unsupportedAtomicRMW)
-      return false;
+    if (hasUnsupportedAtomicRMW(funcOp, partitionScheme, numConsumerGroups,
+                                PartitionSchemeStatus::Failed))
+      return DataPartitionResult::UnsupportedAtomicRMW;
     if (numConsumerGroups > 1) {
       LDBG("computePartitionScheme failed when requested");
-      return false;
+      return DataPartitionResult::Retry;
     }
-    return true;
+    return DataPartitionResult::Success;
   }
-  unsupportedAtomicRMW =
-      hasUnsupportedAtomicRMW(funcOp, partitionScheme, numConsumerGroups,
-                              PartitionSchemeStatus::Complete);
-  if (unsupportedAtomicRMW)
-    return false;
+  if (hasUnsupportedAtomicRMW(funcOp, partitionScheme, numConsumerGroups,
+                              PartitionSchemeStatus::Complete))
+    return DataPartitionResult::UnsupportedAtomicRMW;
 
   // Rewrite the rematerialized ops.
   LDBG("Rewriting rematerialized Ops");
@@ -1446,7 +1442,7 @@ bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups,
   // Make sure original ops are not used
   if (!doDeepCleanup(funcOp, partitionScheme)) {
     LDBG("final cleanup failed");
-    return false;
+    return DataPartitionResult::Retry;
   }
 
   // Make sure original ops are not used
@@ -1457,7 +1453,7 @@ bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups,
   });
 
   fixTaskId(funcOp);
-  return true;
+  return DataPartitionResult::Success;
 }
 
 #define GEN_PASS_DEF_NVGPUTESTWSDATAPARTITION
@@ -1470,11 +1466,9 @@ public:
       NVGPUTestWSDataPartitionPass>::NVGPUTestWSDataPartitionBase;
 
   void runOnFuncOp(triton::FuncOp funcOp) {
-    if (numWarpGroups > 2) {
-      bool unsupportedAtomicRMW = false;
-      if (!doDataPartition(funcOp, numWarpGroups - 1, unsupportedAtomicRMW))
-        signalPassFailure();
-    }
+    if (numWarpGroups > 2 && doDataPartition(funcOp, numWarpGroups - 1) !=
+                                 DataPartitionResult::Success)
+      signalPassFailure();
   }
 
   void runOnOperation() override {

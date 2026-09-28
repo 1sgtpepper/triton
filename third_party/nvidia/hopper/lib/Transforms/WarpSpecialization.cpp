@@ -4,6 +4,7 @@
 #include "mlir/Transforms/Passes.h"
 #include "nvidia/hopper/include/Transforms/Passes.h"
 #include "nvidia/hopper/lib/Transforms/WarpSpecialization/CodePartitionUtility.h"
+#include "nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.h"
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
@@ -17,8 +18,6 @@ namespace mlir {
 
 void doTaskPartition(triton::FuncOp &funcOp, unsigned numWarpGroups);
 int doTaskIdPropagate(triton::FuncOp &funcOp);
-bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups,
-                     bool &unsupportedAtomicRMW);
 void doCodePartition(triton::FuncOp &funcOp, unsigned numBuffers);
 void doTokenLowering(triton::FuncOp &funcOp, unsigned numConsumerGroups);
 
@@ -85,8 +84,8 @@ public:
       }
 
       // Partition ops into parallel sub ops.
-      bool unsupportedAtomicRMW = false;
-      if (doDataPartition(funcOp, numWarpGroups - 1, unsupportedAtomicRMW)) {
+      switch (doDataPartition(funcOp, numWarpGroups - 1)) {
+      case DataPartitionResult::Success:
         if (dumpIntermediateSteps) {
           ::mlir::triton::tools::mlirDumpsOrDbgs()
               << "// -----// WarpSpec internal IR Dump After: doDataPartition\n"
@@ -94,8 +93,9 @@ public:
         }
         success = true;
         break;
-      }
-      if (unsupportedAtomicRMW) {
+      case DataPartitionResult::Retry:
+        break;
+      case DataPartitionResult::UnsupportedAtomicRMW:
         if (hasPreexistingTaskIds) {
           funcOp.emitError()
               << "warp specialization cannot fall back from unsupported "
@@ -109,6 +109,8 @@ public:
         });
         return;
       }
+      if (success)
+        break;
       // Clear async_task.
     }
     if (!success) {
