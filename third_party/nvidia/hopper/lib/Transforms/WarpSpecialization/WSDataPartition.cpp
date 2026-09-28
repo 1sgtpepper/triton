@@ -100,6 +100,9 @@ struct DataPartitionScheme {
   DenseMap<Operation *, SetVector<unsigned>> rematerializedOps;
   // Ops should not be partitioned due to rematerialization.
   DenseSet<Operation *> opsToSkip;
+  // Atomic sinks admitted by the existing K-partition path. The no-op
+  // partition dimension duplicates these operations to combine partial dots.
+  DenseSet<Operation *> atomicRMWsOnKPartitionPath;
 
   // op with noOpPartitionDim will be duplicated instead of partitioned.
   // Use -2 to avoid conflict with Empty/Tombstone value.
@@ -116,6 +119,8 @@ struct DataPartitionScheme {
       rematerializedOps.insert(op);
     for (auto op : other.opsToSkip)
       opsToSkip.insert(op);
+    for (auto op : other.atomicRMWsOnKPartitionPath)
+      atomicRMWsOnKPartitionPath.insert(op);
   }
 
   bool partitionIsCompatible() { return true; }
@@ -390,17 +395,16 @@ static bool getForwardSliceToPartition(Value v,
 
     partitionScheme.opPartitionDims[depOp] = currentDim;
 
-    auto onlyUsedByAtomicStore = [](Value v) {
+    auto onlyUsedByAtomicStore = [](Value v, Operation *&atomicStore) {
       SetVector<Operation *> forwardSlice;
       getForwardSlice(v, &forwardSlice);
-      Operation *atomicStore;
+      atomicStore = nullptr;
       for (auto op : forwardSlice) {
         if (isa<AtomicRMWOp, DescriptorReduceOp>(op)) {
           atomicStore = op;
           break;
         }
       }
-
       if (!atomicStore)
         return false;
 
@@ -426,9 +430,12 @@ static bool getForwardSliceToPartition(Value v,
     if (auto dotOp = dyn_cast<nvidia_gpu::WarpGroupDotOp>(depOp)) {
       if ((currentDim == 0 && v == dotOp.getB()) ||
           (currentDim == 1 && v == dotOp.getA())) {
-        // It is fine to continue the partition if the dot output is immediately
-        // stored out via an atomic add, as the dot computes a partial result.
-        if (onlyUsedByAtomicStore(dotOp.getD())) {
+        // Continue K partitioning when the dot result has a single atomic or
+        // reduce sink. Atomic RMW legality is checked before rewriting.
+        Operation *atomicStore = nullptr;
+        if (onlyUsedByAtomicStore(dotOp.getD(), atomicStore)) {
+          if (isa<AtomicRMWOp>(atomicStore))
+            partitionScheme.atomicRMWsOnKPartitionPath.insert(atomicStore);
           partitionScheme.dotPartitionOperand[dotOp] =
               v == dotOp.getA() ? 0 : 1;
           // Duplicate the users of the dot output since the shape of the output
@@ -1301,15 +1308,101 @@ static bool doDeepCleanup(triton::FuncOp &funcOp,
   return true;
 }
 
-bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups) {
+enum class PartitionSchemeStatus { Failed, Complete };
+
+static bool hasUnsupportedAtomicRMW(triton::FuncOp &funcOp,
+                                    DataPartitionScheme &partitionScheme,
+                                    unsigned numConsumerGroups,
+                                    PartitionSchemeStatus status) {
+  SmallVector<AsyncTaskId, 1> producerTaskIds{0};
+  SmallVector<AsyncTaskId, 2> consumerTaskIds;
+  for (unsigned taskId = 1; taskId <= numConsumerGroups; ++taskId)
+    consumerTaskIds.push_back(static_cast<AsyncTaskId>(taskId));
+
+  bool unsupported = false;
+  funcOp.walk([&](AtomicRMWOp atomicOp) {
+    if (unsupported)
+      return;
+
+    auto taskIds = getAsyncTaskIds(atomicOp);
+    bool inSpecializedLoop = false;
+    for (Operation *parent = atomicOp->getParentOp(); parent;
+         parent = parent->getParentOp()) {
+      if (auto loop = dyn_cast<scf::ForOp>(parent))
+        inSpecializedLoop |=
+            loop->hasAttr(triton::kWarpSpecializeAttrName);
+    }
+    bool inPartitionScheme = partitionScheme.ops.contains(atomicOp);
+    if (!inSpecializedLoop && !inPartitionScheme && taskIds.empty())
+      return;
+
+    bool isProducer = taskIds == producerTaskIds;
+    bool isConsumer = taskIds == consumerTaskIds;
+    if (status == PartitionSchemeStatus::Failed) {
+      // A failed scheme may already contain a partitioned atomic; do not retry
+      // with a partial view of its partition path.
+      unsupported = inPartitionScheme ||
+                    (!isProducer &&
+                     !(numConsumerGroups == 1 && isConsumer));
+      return;
+    }
+
+    if (!inPartitionScheme) {
+      unsupported = !isProducer &&
+                    !(numConsumerGroups == 1 && isConsumer);
+      return;
+    }
+    if ((!isProducer && !isConsumer) ||
+        partitionScheme.numPartitions != numConsumerGroups ||
+        !partitionScheme.opPartitionDims.contains(atomicOp)) {
+      unsupported = true;
+      return;
+    }
+    // Data partitioning clones every op in its closure for each consumer
+    // partition. Producer atomics cannot be duplicated across those slices.
+    if (isProducer) {
+      unsupported = true;
+      return;
+    }
+
+    unsigned dim = partitionScheme.opPartitionDims[atomicOp];
+    if (dim == DataPartitionScheme::noOpPartitionDim) {
+      // Only addition combines independent K-partition dot results.
+      RMWOp rmwOp = atomicOp.getAtomicRmwOp();
+      unsupported = !partitionScheme.atomicRMWsOnKPartitionPath.contains(
+                        atomicOp) ||
+                    (rmwOp != RMWOp::ADD && rmwOp != RMWOp::FADD);
+      return;
+    }
+    // The partitioner clones every op in this closure for each consumer, but
+    // it does not prove that every atomic operand has the corresponding slice
+    // shape. Keep these atomics on the regular pipeline.
+    unsupported = true;
+  });
+  return unsupported;
+}
+
+bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups,
+                     bool &unsupportedAtomicRMW) {
+  unsupportedAtomicRMW = false;
   DataPartitionScheme partitionScheme;
   if (!computePartitionScheme(funcOp, partitionScheme)) {
+    unsupportedAtomicRMW = hasUnsupportedAtomicRMW(
+        funcOp, partitionScheme, numConsumerGroups,
+        PartitionSchemeStatus::Failed);
+    if (unsupportedAtomicRMW)
+      return false;
     if (numConsumerGroups > 1) {
       LDBG("computePartitionScheme failed when requested");
       return false;
     }
     return true;
   }
+  unsupportedAtomicRMW =
+      hasUnsupportedAtomicRMW(funcOp, partitionScheme, numConsumerGroups,
+                              PartitionSchemeStatus::Complete);
+  if (unsupportedAtomicRMW)
+    return false;
 
   // Rewrite the rematerialized ops.
   LDBG("Rewriting rematerialized Ops");
@@ -1380,9 +1473,11 @@ public:
       NVGPUTestWSDataPartitionPass>::NVGPUTestWSDataPartitionBase;
 
   void runOnFuncOp(triton::FuncOp funcOp) {
-    if (numWarpGroups > 2)
-      if (!doDataPartition(funcOp, numWarpGroups - 1))
+    if (numWarpGroups > 2) {
+      bool unsupportedAtomicRMW = false;
+      if (!doDataPartition(funcOp, numWarpGroups - 1, unsupportedAtomicRMW))
         signalPassFailure();
+    }
   }
 
   void runOnOperation() override {
