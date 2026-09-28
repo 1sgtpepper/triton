@@ -1,0 +1,49 @@
+name: Warp specialization main reproduction
+
+on:
+  push:
+    branches:
+      - validation/ws-main-repro
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install validation tools
+        run: python3 -m pip install pre-commit pytest
+
+      - name: Verify source is based on current main
+        env:
+          TRITON_MAIN_SHA: 4fd7cc5cfd0a84acfeb5dadb1578dffa409903fc
+        run: |
+          test "$(git rev-parse HEAD^)" = "$TRITON_MAIN_SHA"
+          git diff --quiet "$TRITON_MAIN_SHA" -- third_party/nvidia/hopper
+
+      - name: Check changed files
+        env:
+          TRITON_MAIN_SHA: 4fd7cc5cfd0a84acfeb5dadb1578dffa409903fc
+        run: |
+          python3 -m pre_commit run --from-ref "$TRITON_MAIN_SHA" --to-ref HEAD --verbose
+
+      - name: Build Triton and triton-opt
+        run: MAX_JOBS=2 make dev-install
+
+      - name: Reproduce both issue failures through Triton's Python compiler
+        run: >-
+          PYTHONPATH=python python3 -m pytest -s --tb=short
+          python/test/unit/language/test_ws_main_repro.py
