@@ -25,7 +25,7 @@ jobs:
           path: harness
       - uses: actions/checkout@v4
         with:
-          ref: 36c2163ce2bbe7880424f546edee83523cc46902
+          ref: b45c9f2bb2fedaabee1e0ae6c09aa53725fdb992
           path: source
       - uses: actions/setup-python@v5
         with:
@@ -51,9 +51,9 @@ jobs:
         if: matrix.variant == 'fixed'
         working-directory: source
         run: |
-          git fetch --no-tags --depth=1 origin 1665fa9a96713f0157e5436f247369d83d0a6632
+          git fetch --no-tags --depth=1 origin 43f6091b348e3314b50fd0b47f2e5a9fb9b24d5e
           python -m pip install pre-commit
-          mapfile -t changed < <(git diff --name-only 1665fa9a96713f0157e5436f247369d83d0a6632 HEAD)
+          mapfile -t changed < <(git diff --name-only 43f6091b348e3314b50fd0b47f2e5a9fb9b24d5e HEAD)
           pre-commit run --show-diff-on-failure --files "${changed[@]}"
       - name: Build current compiler and run repository tests
         if: matrix.variant == 'fixed'
