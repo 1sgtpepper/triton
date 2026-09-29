@@ -19,6 +19,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           submodules: true
+          fetch-depth: 100
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -29,20 +30,9 @@ jobs:
         run: python3 -m pip install pre-commit
 
       - name: Check changed files
-        run: >-
-          python3 -m pre_commit run --files
-          .github/workflows/warp-specialization-validation.yml
-          python/test/unit/language/test_compile_only.py
-          python/test/unit/language/test_warp_specialization.py
-          test/Hopper/WarpSpecialization/ws_gather_fallback.mlir
-          test/Hopper/WarpSpecialization/ws_gather_preexisting_ids.mlir
-          test/Hopper/WarpSpecialization/ws_atomic_rmw_fallback.mlir
-          test/Hopper/WarpSpecialization/ws_atomic_rmw_partition_reject.mlir
-          test/Hopper/WarpSpecialization/ws_atomic_rmw_preexisting_ids.mlir
-          test/Hopper/WarpSpecialization/ws_data_partition.mlir
-          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization.cpp
-          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
-          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.h
+        run: |
+          git fetch --depth=100 https://github.com/triton-lang/triton.git main:refs/remotes/upstream/main
+          python3 -m pre_commit run --from-ref upstream/main --to-ref HEAD
 
       - name: Build Triton and triton-opt
         run: |
