@@ -5,6 +5,7 @@
 #include "nvidia/hopper/include/Transforms/Passes.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
@@ -1334,10 +1335,51 @@ static bool doDeepCleanup(triton::FuncOp &funcOp,
   return true;
 }
 
+static bool hasUnsupportedAtomicRMW(triton::FuncOp &funcOp,
+                                    DataPartitionScheme &partitionScheme,
+                                    unsigned numConsumerGroups) {
+  SmallVector<AsyncTaskId, 1> producerTaskIds{0};
+  SmallVector<AsyncTaskId, 2> consumerTaskIds;
+  for (unsigned taskId = 1; taskId <= numConsumerGroups; ++taskId)
+    consumerTaskIds.push_back(static_cast<AsyncTaskId>(taskId));
+
+  bool unsupported = false;
+  funcOp.walk([&](AtomicRMWOp atomicOp) {
+    if (unsupported)
+      return;
+
+    auto taskIds = getAsyncTaskIds(atomicOp);
+    bool inSpecializedLoop = false;
+    for (Operation *parent = atomicOp->getParentOp(); parent;
+         parent = parent->getParentOp()) {
+      if (auto loop = dyn_cast<scf::ForOp>(parent))
+        inSpecializedLoop |= loop->hasAttr(triton::kWarpSpecializeAttrName);
+    }
+    bool inPartitionScheme = partitionScheme.ops.contains(atomicOp);
+    if (!inSpecializedLoop && !inPartitionScheme && taskIds.empty())
+      return;
+
+    bool isProducer = taskIds == producerTaskIds;
+    bool isConsumer = taskIds == consumerTaskIds;
+    if (inPartitionScheme) {
+      // The partitioner cannot prove that rewriting preserves the atomic
+      // effect: a no-op dimension can duplicate it, while slicing can change
+      // its operand shapes.
+      unsupported = true;
+      return;
+    }
+
+    unsupported = !isProducer && !(numConsumerGroups == 1 && isConsumer);
+  });
+  return unsupported;
+}
+
 DataPartitionResult doDataPartition(triton::FuncOp &funcOp,
                                     unsigned numConsumerGroups) {
   DataPartitionScheme partitionScheme;
   auto result = computePartitionScheme(funcOp, partitionScheme);
+  if (hasUnsupportedAtomicRMW(funcOp, partitionScheme, numConsumerGroups))
+    return DataPartitionResult::Unsupported;
   if (result == DataPartitionResult::Unsupported)
     return result;
   if (result == DataPartitionResult::Retry) {
