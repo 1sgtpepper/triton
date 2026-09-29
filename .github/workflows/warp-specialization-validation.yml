@@ -1,0 +1,61 @@
+name: Warp specialization current-head validation
+
+on:
+  push:
+    branches:
+      - validation/ws-rebased-current-main-2026-09-29
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install pre-commit
+        run: python3 -m pip install pre-commit
+
+      - name: Check changed files
+        run: >-
+          python3 -m pre_commit run --files
+          .github/workflows/warp-specialization-validation.yml
+          python/test/unit/language/test_compile_only.py
+          python/test/unit/language/test_warp_specialization.py
+          test/Hopper/WarpSpecialization/ws_gather_fallback.mlir
+          test/Hopper/WarpSpecialization/ws_gather_preexisting_ids.mlir
+          test/Hopper/WarpSpecialization/ws_atomic_rmw_fallback.mlir
+          test/Hopper/WarpSpecialization/ws_atomic_rmw_partition_reject.mlir
+          test/Hopper/WarpSpecialization/ws_atomic_rmw_preexisting_ids.mlir
+          test/Hopper/WarpSpecialization/ws_data_partition.mlir
+          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization.cpp
+          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
+          third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.h
+
+      - name: Build Triton and triton-opt
+        run: |
+          MAX_JOBS=2 make dev-install
+          build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
+          ninja -C "$build_dir" triton-opt
+
+      - name: Run compile-only Gather and atomic regressions
+        run: |
+          python3 -m pip install pytest
+          python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py \
+            -k 'test_compile_only_ws_gather_falls_back or test_compile_only_ws_atomic_rmw_falls_back'
+
+      - name: Run Hopper warp-specialization lit tests
+        run: |
+          build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
+          cd "$build_dir"
+          lit -v test/Hopper/WarpSpecialization
