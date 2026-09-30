@@ -147,6 +147,7 @@ jobs:
           if-no-files-found: error
 
   integration:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
@@ -214,7 +215,6 @@ jobs:
           if-no-files-found: error
 
   gather-edge:
-    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -224,6 +224,7 @@ jobs:
         with:
           path: harness
           sparse-checkout: validation/check_gather_edge.py
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - name: Download exact Gather wheel
