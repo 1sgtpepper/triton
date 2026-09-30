@@ -7,9 +7,11 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   gather:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
@@ -142,4 +144,121 @@ jobs:
         with:
           name: atomic-candidate-wheel
           path: source/dist/*.whl
+          if-no-files-found: error
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out patch
+        uses: actions/checkout@v6
+        with:
+          path: harness
+          sparse-checkout: validation/patches/integration.patch
+          persist-credentials: false
+
+      - name: Check out Gather PR revision
+        uses: actions/checkout@v6
+        with:
+          repository: 1sgtpepper/triton
+          ref: 4f12ec924a55271fdd29617c97660446c2263ef6
+          path: source
+          submodules: true
+          fetch-depth: 100
+          persist-credentials: false
+
+      - name: Apply resolved Atomic and test patches
+        working-directory: source
+        run: |
+          test "$(git rev-parse HEAD)" = 4f12ec924a55271fdd29617c97660446c2263ef6
+          git apply --check "$GITHUB_WORKSPACE/harness/validation/patches/integration.patch"
+          git apply "$GITHUB_WORKSPACE/harness/validation/patches/integration.patch"
+          git diff --check
+          git diff --stat
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Build integrated compiler
+        working-directory: source
+        env:
+          MAX_JOBS: '2'
+        run: make dev-install
+
+      - name: Compile both issue reproducers
+        working-directory: source
+        run: python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py::test_compile_only_ws_gather_falls_back python/test/unit/language/test_compile_only.py::test_compile_only_ws_atomic_rmw_falls_back
+
+      - name: Test both partition fixture families
+        working-directory: source
+        run: |
+          build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
+          ninja -C "$build_dir" triton-opt
+          cd "$build_dir"
+          lit -v test/Hopper/WarpSpecialization/ws_gather_fallback.mlir test/Hopper/WarpSpecialization/ws_gather_preexisting_ids.mlir test/Hopper/WarpSpecialization/ws_atomic_rmw_partition_reject.mlir test/Hopper/WarpSpecialization/ws_atomic_rmw_fallback.mlir test/Hopper/WarpSpecialization/ws_atomic_rmw_preexisting_ids.mlir
+
+      - name: Package integrated candidate
+        working-directory: source
+        env:
+          MAX_JOBS: '2'
+        run: python3 setup.py bdist_wheel
+
+      - name: Save integrated wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-candidate-wheel
+          path: source/dist/*.whl
+          if-no-files-found: error
+
+  gather-edge:
+    if: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out probe
+        uses: actions/checkout@v6
+        with:
+          path: harness
+          sparse-checkout: validation/check_gather_edge.py
+          persist-credentials: false
+
+      - name: Download exact Gather wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: gather-candidate-wheel
+          run-id: 36718504960
+          github-token: ${{ github.token }}
+          path: wheel
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install exact Gather wheel
+        run: python3 -m pip install wheel/*.whl
+
+      - name: Probe original and eligible N shapes
+        run: |
+          for spec in '128 1' '256 1' '256 0'; do
+            set -- $spec
+            case_name="n${1}-axis${2}"
+            set +e
+            python3 harness/validation/check_gather_edge.py "$1" "$2" > "${case_name}.log" 2>&1
+            status=$?
+            set -e
+            printf '%s: exit %s\n' "$case_name" "$status"
+            rg -n 'LLVM ERROR|Pipeline failed|warp_specialize retained|RuntimeError|AssertionError' "${case_name}.log" | tail -8 || true
+          done
+
+      - name: Save probe logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gather-edge-logs
+          path: '*.log'
           if-no-files-found: error
