@@ -1,0 +1,162 @@
+diff --git a/python/test/unit/language/test_compile_only.py b/python/test/unit/language/test_compile_only.py
+index 0495e4548..dc87261ad 100644
+--- a/python/test/unit/language/test_compile_only.py
++++ b/python/test/unit/language/test_compile_only.py
+@@ -64,7 +64,7 @@ def test_topk_valid_k(k):
+     triton.compile(src, target=GPUTarget("cuda", 90, 32))
+ 
+ 
+-def test_compile_only_ws_gather_falls_back():
++def test_compile_only_ws_gather_partitions_orthogonal_axis():
+     src = ASTSource(
+         fn=gather_before_dot_ws_kernel,
+         signature={"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp32"},
+@@ -76,7 +76,7 @@ def test_compile_only_ws_gather_falls_back():
+         options={"num_warps": 4, "num_stages": 3},
+     )
+     assert "tt.gather" in compiled.asm["ttgir"]
+-    assert "ttg.warp_specialize" not in compiled.asm["ttgir"]
++    assert "ttg.warp_specialize" in compiled.asm["ttgir"]
+ 
+ 
+ def test_compile_only_sort_keeps_comparisons_boolean() -> None:
+diff --git a/python/test/unit/language/test_warp_specialization.py b/python/test/unit/language/test_warp_specialization.py
+index 0c0d08dee..4e675f5a0 100644
+--- a/python/test/unit/language/test_warp_specialization.py
++++ b/python/test/unit/language/test_warp_specialization.py
+@@ -35,14 +35,14 @@ def gather_ws_kernel(a_ptr, b_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, K:
+     for i in tl.range(0, 4, warp_specialize=WARP_SPECIALIZE):
+         a = tl.load(a_ptr + om[:, None] * K + ok[None, :] + i * M * K)
+         b = tl.load(b_ptr + ok[:, None] * N + on[None, :] + i * K * N)
+-        idx = tl.full([M, K], 1, tl.int32)
++        idx = (om[:, None] + ok[None, :]) % K
+         a = tl.gather(a, idx, axis=1)
+         acc += tl.dot(a, b)
+     tl.store(out_ptr + om[:, None] * N + on[None, :], acc)
+ 
+ 
+ @pytest.mark.skipif(is_hip() or not is_hopper(), reason="Requires Hopper CUDA")
+-def test_warp_specialize_gather_fallback_matches_plain_pipeline():
++def test_warp_specialize_gather_orthogonal_matches_plain_pipeline():
+     M = N = K = 128
+     torch.manual_seed(11952)
+     a = torch.randn((4, M, K), device="cuda", dtype=torch.float16)
+@@ -76,10 +76,12 @@ def test_warp_specialize_gather_fallback_matches_plain_pipeline():
+         return
+ 
+     assert "tt.gather" in kernel_ws.asm["ttgir"]
+-    assert "ttg.warp_specialize" not in kernel_ws.asm["ttgir"]
++    assert "ttg.warp_specialize" in kernel_ws.asm["ttgir"]
+     expected = torch.zeros_like(out_ws)
++    row_indices = (torch.arange(M, device="cuda")[:, None] +
++                   torch.arange(K, device="cuda")[None, :]) % K
+     for i in range(4):
+-        selected = a[i, :, 1:2].float().expand(M, K)
++        selected = torch.gather(a[i].float(), 1, row_indices)
+         expected += selected @ b[i].float()
+     torch.testing.assert_close(out_ws, expected, atol=5e-2, rtol=5e-2)
+     torch.testing.assert_close(out_ws, out_plain, atol=5e-2, rtol=5e-2)
+diff --git a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
+index 1c7a6c27d..1ca11ee77 100644
+--- a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
++++ b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
+@@ -204,6 +204,12 @@ static bool needToSlice(Value v, unsigned dim, int size) {
+   return shape.size() > dim && shape[dim] > size;
+ }
+ 
++static bool canPartitionGather(GatherOp gatherOp, unsigned dim) {
++  return dim != DataPartitionScheme::noOpPartitionDim &&
++         dim != gatherOp.getAxis() &&
++         lookupNumCTAs(gatherOp.getOperation()) == 1;
++}
++
+ // Duplicate the op for different partition dims.
+ static bool rematerializeOp(Operation *op, DataPartitionScheme &partitionScheme,
+                             unsigned currentDim) {
+@@ -256,6 +262,14 @@ getBackwardSliceToPartition(Value v, DataPartitionScheme &partitionScheme,
+     }
+     partitionScheme.opPartitionDims[op] = currentDim;
+ 
++    if (auto constant = dyn_cast<arith::ConstantOp>(op)) {
++      if (currentDim != DataPartitionScheme::noOpPartitionDim) {
++        auto dense = dyn_cast<DenseElementsAttr>(constant.getValueAttr());
++        if (!dense || !dense.isSplat())
++          return DataPartitionResult::Unsupported;
++      }
++    }
++
+     // Flip dim when op is trans
+     if (auto transOp = dyn_cast<TransOp>(op)) {
+       currentDim = partitionScheme.flipPartitionDim(currentDim,
+@@ -336,9 +350,15 @@ getBackwardSliceToPartition(Value v, DataPartitionScheme &partitionScheme,
+                                            currentDim);
+       if (result != DataPartitionResult::Success)
+         return result;
+-    } else if (isa<GatherOp>(op)) {
+-      // The partitioner has no rule for slicing a Gather's source and indices.
+-      return DataPartitionResult::Unsupported;
++    } else if (auto gatherOp = dyn_cast<GatherOp>(op)) {
++      if (!canPartitionGather(gatherOp, currentDim))
++        return DataPartitionResult::Unsupported;
++      for (Value operand : gatherOp->getOperands()) {
++        auto result =
++            getBackwardSliceToPartition(operand, partitionScheme, currentDim);
++        if (result != DataPartitionResult::Success)
++          return result;
++      }
+     } else {
+       llvm_unreachable("Unexpected op");
+     }
+@@ -359,6 +379,9 @@ getBackwardSliceToPartition(Value v, DataPartitionScheme &partitionScheme,
+           getBackwardSliceToPartition(yieldArg, partitionScheme, currentDim);
+       if (result != DataPartitionResult::Success)
+         return result;
++    } else if (isa<triton::FuncOp>(bbAargOwner) &&
++               currentDim != DataPartitionScheme::noOpPartitionDim) {
++      return DataPartitionResult::Unsupported;
+     }
+   }
+ 
+@@ -377,7 +400,8 @@ getForwardSliceToPartition(Value v, DataPartitionScheme &partitionScheme,
+   // Recusively process operands forwards.
+   unsigned originalDim = currentDim;
+   for (Operation *depOp : v.getUsers()) {
+-    if (isa<GatherOp>(depOp))
++    if (auto gatherOp = dyn_cast<GatherOp>(depOp);
++        gatherOp && !canPartitionGather(gatherOp, originalDim))
+       return DataPartitionResult::Unsupported;
+ 
+     currentDim = originalDim;
+@@ -512,7 +536,7 @@ getSliceToPartition(Value root, DataPartitionScheme &partitionScheme,
+     if (currentDim == DataPartitionScheme::noOpPartitionDim)
+       continue;
+     if (op->hasTrait<OpTrait::Elementwise>() ||
+-        isa<StoreOp, DescriptorStoreOp, AtomicRMWOp>(op)) {
++        isa<StoreOp, DescriptorStoreOp, AtomicRMWOp, GatherOp>(op)) {
+       for (OpOperand &operand : op->getOpOperands()) {
+         result = getBackwardSliceToPartition(operand.get(), partitionScheme,
+                                              currentDim);
+@@ -648,6 +672,14 @@ computePartitionScheme(triton::FuncOp &funcOp,
+ 
+       auto result = getSliceToPartition(accumulator, trialPartitionScheme,
+                                         partitionDim[i]);
++      if (result == DataPartitionResult::Success &&
++          llvm::any_of(trialPartitionScheme.ops, [](Operation *candidate) {
++            return isa<GatherOp>(candidate);
++          }) &&
++          llvm::any_of(trialPartitionScheme.ops, [](Operation *candidate) {
++            return isa<DescriptorLoadOp, DescriptorStoreOp>(candidate);
++          }))
++        result = DataPartitionResult::Unsupported;
+       if (result == DataPartitionResult::Success) {
+         success = true;
+         partitionScheme = trialPartitionScheme;
+@@ -887,7 +919,7 @@ static Operation *sliceOp(Operation *op, int offset, IRMapping &mappings,
+   if ((dim == DataPartitionScheme::noOpPartitionDim) ||
+       op->hasTrait<OpTrait::Elementwise>() ||
+       isa<ConvertLayoutOp, BroadcastOp, SplatOp, ExpandDimsOp, FpToFpOp,
+-          AtomicRMWOp, LocalAllocOp, SplitOp, JoinOp, ReshapeOp>(op)) {
++          AtomicRMWOp, GatherOp, LocalAllocOp, SplitOp, JoinOp, ReshapeOp>(op)) {
+     for (Value operand : op->getOperands())
+       sliceOp(operand, offset, mappings, reverseMappings, partitionScheme);
+     newOp = cloneAndSetResultType(op);
