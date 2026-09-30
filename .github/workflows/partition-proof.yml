@@ -75,6 +75,12 @@ jobs:
           old_load = "%b = tt.descriptor_load %arg1[%c0, %i]"
           assert original.count(old_load) == 1
           with_op = original.replace(old_load, "%b_idx = arith.addi %i, %c0 : i32\n      %b = tt.descriptor_load %arg1[%c0, %b_idx]")
+          old_a_load = "%a = tt.descriptor_load %arg0[%i, %c0]"
+          assert original.count(old_a_load) == 1
+          with_a_op = original.replace(
+              old_a_load, "%a_idx = arith.addi %i, %c0 : i32\n      %a = tt.descriptor_load %arg0[%a_idx, %c0]")
+          with_repeated_coordinate = original.replace(
+              old_load, "%b_idx = arith.addi %i, %c0 : i32\n      %b = tt.descriptor_load %arg1[%b_idx, %b_idx]")
           with_constant = original.replace(old_load, "%b = tt.descriptor_load %arg1[%c0, %c0]")
           def encode_descriptors(body):
               for shape in ("128x64", "64x256", "128x256"):
@@ -83,11 +89,46 @@ jobs:
                   body = body.replace(old_type, f"!tt.tensordesc<{shape}xf16, #shared>")
               return body
 
+          def make_local_descriptors(body):
+              body = encode_descriptors(body)
+              body = body.replace("@gather_a_uses_safe_n_partition",
+                                  "@gather_a_uses_local_descriptors", 1)
+              for shape in ("128x64", "64x256", "128x256"):
+                  desc_type = f"!tt.tensordesc<{shape}xf16, #shared>"
+                  assert body.count(desc_type) == 2
+                  body = body.replace(desc_type, "!tt.ptr<f16>", 1)
+              body = body.replace("tt.descriptor_load %arg0", "tt.descriptor_load %a_desc")
+              body = body.replace("tt.descriptor_load %arg1", "tt.descriptor_load %b_desc")
+              body = body.replace("tt.descriptor_store %arg2", "tt.descriptor_store %c_desc")
+              anchor = "    %c1 = arith.constant 1 : i32\n"
+              assert body.count(anchor) == 1
+              descriptors = """    %c128 = arith.constant 128 : i32
+              %c256 = arith.constant 256 : i32
+              %c1_i64 = arith.constant 1 : i64
+              %c256_i64 = arith.constant 256 : i64
+              %a_desc = tt.make_tensor_descriptor %arg0, [%c128, %c256], [%c256_i64, %c1_i64] : <f16>, <128x64xf16, #shared>
+              %b_desc = tt.make_tensor_descriptor %arg1, [%c256, %c256], [%c256_i64, %c1_i64] : <f16>, <64x256xf16, #shared>
+              %c_desc = tt.make_tensor_descriptor %arg2, [%c128, %c256], [%c256_i64, %c1_i64] : <f16>, <128x256xf16, #shared>
+          """
+              return body.replace(anchor, anchor + descriptors, 1)
+
+          def remove_gather(body):
+              assert body.count(" = tt.gather ") == 1
+              body = "".join(line for line in body.splitlines(keepends=True)
+                             if " = tt.gather " not in line)
+              assert body.count("ttg.local_alloc %gathered") == 1
+              return body.replace("ttg.local_alloc %gathered", "ttg.local_alloc %a")
+
           cases = [("block-argument", original),
                    ("equivalent-defining-op", with_op),
                    ("constant-coordinate", with_constant),
                    ("encoded-block-argument", encode_descriptors(original)),
-                   ("encoded-equivalent-defining-op", encode_descriptors(with_op))]
+                   ("encoded-equivalent-defining-op", encode_descriptors(with_op)),
+                   ("local-descriptor-block-argument", make_local_descriptors(original)),
+                   ("local-descriptor-equivalent-defining-op", make_local_descriptors(with_op)),
+                   ("local-descriptor-repeated-coordinate", make_local_descriptors(with_repeated_coordinate)),
+                   ("plain-matmul-block-argument", remove_gather(make_local_descriptors(original))),
+                   ("plain-matmul-equivalent-defining-op", remove_gather(make_local_descriptors(with_a_op)))]
 
           statuses = {}
           for label, body in cases:
@@ -109,6 +150,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: descriptor-coordinate-encoding-head
+          name: descriptor-coordinate-local-head
           path: diagnostics/
           if-no-files-found: warn
