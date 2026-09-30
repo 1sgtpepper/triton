@@ -9,17 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  gather-fixture:
+  descriptor-coordinate:
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: gather-base
-            ref: 895801b66e43eb6784624d9e68870af3b8fd78d8
-          - label: gather-head
-            ref: 4f12ec924a55271fdd29617c97660446c2263ef6
 
     steps:
       - name: Check out proof fixture
@@ -33,7 +25,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: 1sgtpepper/triton
-          ref: ${{ matrix.ref }}
+          ref: 4f12ec924a55271fdd29617c97660446c2263ef6
           path: source
           submodules: true
           fetch-depth: 100
@@ -50,7 +42,7 @@ jobs:
           MAX_JOBS: '2'
         run: make dev-install
 
-      - name: Isolate Gather fixture functions
+      - name: Compare equivalent descriptor coordinates
         working-directory: source
         shell: bash
         run: |
@@ -69,44 +61,37 @@ jobs:
           fixture = Path(sys.argv[1])
           binary = sys.argv[2]
           out = Path(sys.argv[3])
+          import hashlib
+
+          assert hashlib.sha256(fixture.read_bytes()).hexdigest() == (
+              "43a3bd9e4dd3ad92f3017294a0182648226a4be5af81e1b0e91b51a771eba111")
           lines = fixture.read_text().splitlines(keepends=True)
-          starts = (153, 173, 193, 213, 234, 262, 287, 318, 352)
-          ends = (172, 192, 212, 233, 261, 286, 317, 351, 370)
           header = "".join(lines[144:152])
           footer = lines[370]
-          functions = ["".join(lines[start - 1:end])
-                       for start, end in zip(starts, ends)]
+          original = "".join(lines[351:370])
           assert len(lines) == 371 and footer.strip() == "}"
-          assert all(body.lstrip().startswith("tt.func ") for body in functions)
+          assert original.lstrip().startswith("tt.func @gather_a_uses_safe_n_partition")
 
-          cases = [("full", "".join(lines))]
-          for index in range(len(functions)):
-              cases.append((f"single-{index + 1}", header + functions[index] + footer))
-              cases.append((f"prefix-{index + 1}", header + "".join(functions[:index + 1]) + footer))
-          for index in range(8):
-              cases.append((f"pair-{index + 1}-9", header + functions[index] + functions[8] + footer))
+          old_load = "%b = tt.descriptor_load %arg1[%c0, %i]"
+          assert original.count(old_load) == 1
+          with_op = original.replace(old_load, "%b_idx = arith.addi %i, %c0 : i32\n      %b = tt.descriptor_load %arg1[%c0, %b_idx]")
+          with_constant = original.replace(old_load, "%b = tt.descriptor_load %arg1[%c0, %c0]")
+
+          cases = [("block-argument", original),
+                   ("equivalent-defining-op", with_op),
+                   ("constant-coordinate", with_constant)]
 
           statuses = {}
           for label, body in cases:
               path = out / f"{label}.mlir"
-              path.write_text(body)
-              result = subprocess.run(
-                  [binary, str(path), "--nvgpu-warp-specialization=num-stages=2", "-o", "/dev/null"],
-                  capture_output=True, text=True, errors="replace")
-              (out / f"{label}.log").write_text(result.stdout + result.stderr)
-              statuses[label] = result.returncode
-              print(f"{label}: {result.returncode}", flush=True)
-
-          failing = [label for label, code in statuses.items() if code != 0]
-          for label in dict.fromkeys(["full"] + failing[:2]):
-              path = out / f"{label}.mlir"
+              path.write_text(header + body + footer)
               result = subprocess.run(
                   [binary, str(path), "--nvgpu-warp-specialization=num-stages=2 dump-intermediate-steps=true",
                    "-o", "/dev/null"],
                   capture_output=True, text=True, errors="replace")
-              (out / f"{label}-stages.log").write_text(result.stdout + result.stderr)
-              statuses[f"{label}-stages"] = result.returncode
-              print(f"{label}-stages: {result.returncode}", flush=True)
+              (out / f"{label}.log").write_text(result.stdout + result.stderr)
+              statuses[label] = result.returncode
+              print(f"{label}: {result.returncode}", flush=True)
 
           (out / "status.txt").write_text(
               "".join(f"{label}={code}\n" for label, code in statuses.items()))
@@ -116,6 +101,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gather-fixture-${{ matrix.label }}
+          name: descriptor-coordinate-head
           path: diagnostics/
           if-no-files-found: warn
