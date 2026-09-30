@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   gather:
-    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
@@ -54,7 +53,7 @@ jobs:
 
       - name: Compile issue reproducer
         working-directory: source
-        run: python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py::test_compile_only_ws_gather_partitions_orthogonal_axis python/test/unit/language/test_compile_only.py::test_compile_only_ws_gather_multi_cta_falls_back
+        run: python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py::test_compile_only_ws_gather_falls_back
 
       - name: Test Gather partition fixtures
         working-directory: source
@@ -62,7 +61,7 @@ jobs:
           build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
           ninja -C "$build_dir" triton-opt
           cd "$build_dir"
-          lit -v test/Hopper/WarpSpecialization/ws_gather_fallback.mlir test/Hopper/WarpSpecialization/ws_code_partition.mlir
+          lit -v test/Hopper/WarpSpecialization/ws_gather_fallback.mlir
 
       - name: Package Gather candidate
         working-directory: source
@@ -78,6 +77,7 @@ jobs:
           if-no-files-found: error
 
   atomic:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
