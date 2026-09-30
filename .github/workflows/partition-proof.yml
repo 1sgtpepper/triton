@@ -1,0 +1,99 @@
+name: Partition source proof
+
+on:
+  push:
+    branches:
+      - validation/partition-proof-2026-09-30
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: gather-base
+            case: gather
+            ref: 895801b66e43eb6784624d9e68870af3b8fd78d8
+          - label: gather-head
+            case: gather
+            ref: 4f12ec924a55271fdd29617c97660446c2263ef6
+          - label: atomic-head
+            case: atomic
+            ref: 33fc7879995fef07a6b64415482c63e936887f47
+
+    steps:
+      - name: Check out proof fixture
+        uses: actions/checkout@v6
+        with:
+          path: harness
+          sparse-checkout: validation/fixtures
+          persist-credentials: false
+
+      - name: Check out source revision
+        uses: actions/checkout@v6
+        with:
+          repository: 1sgtpepper/triton
+          ref: ${{ matrix.ref }}
+          path: source
+          submodules: true
+          fetch-depth: 100
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Build exact source revision
+        working-directory: source
+        env:
+          MAX_JOBS: '2'
+        run: make dev-install
+
+      - name: Compare isolated Gather behavior
+        if: ${{ matrix.case == 'gather' }}
+        working-directory: source
+        shell: bash
+        run: |
+          build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
+          ninja -C "$build_dir" triton-opt
+          binary="$(find "$build_dir" -type f -name triton-opt -perm -u+x -print -quit)"
+          test -n "$binary"
+          fixture="$GITHUB_WORKSPACE/harness/validation/fixtures/unrelated-gather.mlir"
+          printf '5ef288fbe4499482390924f4ccd1bb868bfb03031b5018ef29d75ceafff58b3d  %s\n' "$fixture" | sha256sum --check -
+          mkdir -p "$GITHUB_WORKSPACE/diagnostics"
+          set +e
+          "$binary" "$fixture" --nvgpu-warp-specialization=num-stages=2 -o /dev/null > "$GITHUB_WORKSPACE/diagnostics/gather-plain.log" 2>&1
+          plain_status=$?
+          "$binary" "$fixture" '--nvgpu-warp-specialization=num-stages=2 dump-intermediate-steps=true' -o /dev/null > "$GITHUB_WORKSPACE/diagnostics/gather-stages.log" 2>&1
+          stages_status=$?
+          set -e
+          printf 'plain_exit=%s\nstages_exit=%s\n' "$plain_status" "$stages_status" | tee "$GITHUB_WORKSPACE/diagnostics/status.txt"
+          tail -n 80 "$GITHUB_WORKSPACE/diagnostics/gather-plain.log"
+
+      - name: Measure original atomic task IDs
+        if: ${{ matrix.case == 'atomic' }}
+        working-directory: source
+        shell: bash
+        run: |
+          python3 -m pip install pytest
+          mkdir -p "$GITHUB_WORKSPACE/diagnostics"
+          set +e
+          MLIR_ENABLE_DUMP=1 python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py::test_compile_only_ws_atomic_rmw_falls_back > "$GITHUB_WORKSPACE/diagnostics/atomic-stages.log" 2>&1
+          test_status=$?
+          set -e
+          printf 'test_exit=%s\n' "$test_status" | tee "$GITHUB_WORKSPACE/diagnostics/status.txt"
+          tail -n 80 "$GITHUB_WORKSPACE/diagnostics/atomic-stages.log"
+
+      - name: Save proof logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: partition-proof-${{ matrix.label }}
+          path: diagnostics/
+          if-no-files-found: warn
