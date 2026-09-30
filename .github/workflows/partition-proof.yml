@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  focused:
+  gather-fixture:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -17,14 +17,9 @@ jobs:
       matrix:
         include:
           - label: gather-base
-            case: gather
             ref: 895801b66e43eb6784624d9e68870af3b8fd78d8
           - label: gather-head
-            case: gather
             ref: 4f12ec924a55271fdd29617c97660446c2263ef6
-          - label: atomic-head
-            case: atomic
-            ref: 33fc7879995fef07a6b64415482c63e936887f47
 
     steps:
       - name: Check out proof fixture
@@ -55,8 +50,7 @@ jobs:
           MAX_JOBS: '2'
         run: make dev-install
 
-      - name: Compare isolated Gather behavior
-        if: ${{ matrix.case == 'gather' }}
+      - name: Isolate Gather fixture functions
         working-directory: source
         shell: bash
         run: |
@@ -64,36 +58,64 @@ jobs:
           ninja -C "$build_dir" triton-opt
           binary="$(find "$build_dir" -type f -name triton-opt -perm -u+x -print -quit)"
           test -n "$binary"
-          fixture="$GITHUB_WORKSPACE/harness/validation/fixtures/unrelated-gather.mlir"
-          printf '5ef288fbe4499482390924f4ccd1bb868bfb03031b5018ef29d75ceafff58b3d  %s\n' "$fixture" | sha256sum --check -
+          fixture="$GITHUB_WORKSPACE/harness/validation/fixtures/ws_gather_full.mlir"
+          printf '43a3bd9e4dd3ad92f3017294a0182648226a4be5af81e1b0e91b51a771eba111  %s\n' "$fixture" | sha256sum --check -
           mkdir -p "$GITHUB_WORKSPACE/diagnostics"
-          set +e
-          "$binary" "$fixture" --nvgpu-warp-specialization=num-stages=2 -o /dev/null > "$GITHUB_WORKSPACE/diagnostics/gather-plain.log" 2>&1
-          plain_status=$?
-          "$binary" "$fixture" '--nvgpu-warp-specialization=num-stages=2 dump-intermediate-steps=true' -o /dev/null > "$GITHUB_WORKSPACE/diagnostics/gather-stages.log" 2>&1
-          stages_status=$?
-          set -e
-          printf 'plain_exit=%s\nstages_exit=%s\n' "$plain_status" "$stages_status" | tee "$GITHUB_WORKSPACE/diagnostics/status.txt"
-          tail -n 80 "$GITHUB_WORKSPACE/diagnostics/gather-plain.log"
+          python3 - "$fixture" "$binary" "$GITHUB_WORKSPACE/diagnostics" <<'PY'
+          from pathlib import Path
+          import subprocess
+          import sys
 
-      - name: Measure original atomic task IDs
-        if: ${{ matrix.case == 'atomic' }}
-        working-directory: source
-        shell: bash
-        run: |
-          python3 -m pip install pytest
-          mkdir -p "$GITHUB_WORKSPACE/diagnostics"
-          set +e
-          MLIR_ENABLE_DUMP=1 python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py::test_compile_only_ws_atomic_rmw_falls_back > "$GITHUB_WORKSPACE/diagnostics/atomic-stages.log" 2>&1
-          test_status=$?
-          set -e
-          printf 'test_exit=%s\n' "$test_status" | tee "$GITHUB_WORKSPACE/diagnostics/status.txt"
-          tail -n 80 "$GITHUB_WORKSPACE/diagnostics/atomic-stages.log"
+          fixture = Path(sys.argv[1])
+          binary = sys.argv[2]
+          out = Path(sys.argv[3])
+          lines = fixture.read_text().splitlines(keepends=True)
+          starts = (153, 173, 193, 213, 234, 262, 287, 318, 352)
+          ends = (172, 192, 212, 233, 261, 286, 317, 351, 370)
+          header = "".join(lines[144:152])
+          footer = lines[370]
+          functions = ["".join(lines[start - 1:end])
+                       for start, end in zip(starts, ends)]
+          assert len(lines) == 371 and footer.strip() == "}"
+          assert all(body.lstrip().startswith("tt.func ") for body in functions)
+
+          cases = [("full", "".join(lines))]
+          for index in range(len(functions)):
+              cases.append((f"single-{index + 1}", header + functions[index] + footer))
+              cases.append((f"prefix-{index + 1}", header + "".join(functions[:index + 1]) + footer))
+          for index in range(8):
+              cases.append((f"pair-{index + 1}-9", header + functions[index] + functions[8] + footer))
+
+          statuses = {}
+          for label, body in cases:
+              path = out / f"{label}.mlir"
+              path.write_text(body)
+              result = subprocess.run(
+                  [binary, str(path), "--nvgpu-warp-specialization=num-stages=2", "-o", "/dev/null"],
+                  capture_output=True, text=True, errors="replace")
+              (out / f"{label}.log").write_text(result.stdout + result.stderr)
+              statuses[label] = result.returncode
+              print(f"{label}: {result.returncode}", flush=True)
+
+          failing = [label for label, code in statuses.items() if code != 0]
+          for label in dict.fromkeys(["full"] + failing[:2]):
+              path = out / f"{label}.mlir"
+              result = subprocess.run(
+                  [binary, str(path), "--nvgpu-warp-specialization=num-stages=2 dump-intermediate-steps=true",
+                   "-o", "/dev/null"],
+                  capture_output=True, text=True, errors="replace")
+              (out / f"{label}-stages.log").write_text(result.stdout + result.stderr)
+              statuses[f"{label}-stages"] = result.returncode
+              print(f"{label}-stages: {result.returncode}", flush=True)
+
+          (out / "status.txt").write_text(
+              "".join(f"{label}={code}\n" for label, code in statuses.items()))
+          PY
 
       - name: Save proof logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: partition-proof-${{ matrix.label }}
+          name: gather-fixture-${{ matrix.label }}
           path: diagnostics/
           if-no-files-found: warn
