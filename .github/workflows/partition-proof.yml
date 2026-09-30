@@ -42,7 +42,7 @@ jobs:
           MAX_JOBS: '2'
         run: make dev-install
 
-      - name: Compare equivalent descriptor coordinates
+      - name: Compare descriptor coordinates and encodings
         working-directory: source
         shell: bash
         run: |
@@ -76,10 +76,18 @@ jobs:
           assert original.count(old_load) == 1
           with_op = original.replace(old_load, "%b_idx = arith.addi %i, %c0 : i32\n      %b = tt.descriptor_load %arg1[%c0, %b_idx]")
           with_constant = original.replace(old_load, "%b = tt.descriptor_load %arg1[%c0, %c0]")
+          def encode_descriptors(body):
+              for shape in ("128x64", "64x256", "128x256"):
+                  old_type = f"!tt.tensordesc<{shape}xf16>"
+                  assert body.count(old_type) == 2
+                  body = body.replace(old_type, f"!tt.tensordesc<{shape}xf16, #shared>")
+              return body
 
           cases = [("block-argument", original),
                    ("equivalent-defining-op", with_op),
-                   ("constant-coordinate", with_constant)]
+                   ("constant-coordinate", with_constant),
+                   ("encoded-block-argument", encode_descriptors(original)),
+                   ("encoded-equivalent-defining-op", encode_descriptors(with_op))]
 
           statuses = {}
           for label, body in cases:
@@ -101,6 +109,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: descriptor-coordinate-head
+          name: descriptor-coordinate-encoding-head
           path: diagnostics/
           if-no-files-found: warn
