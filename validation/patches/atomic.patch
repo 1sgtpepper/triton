@@ -54,16 +54,3 @@ index 4a7411ac7..a1879f1dc 100644
 +    tt.return
 +  }
 +}
-diff --git a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
-index f4c5263d4..ca4cfbf60 100644
---- a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
-+++ b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
-@@ -395,7 +395,7 @@ static bool getForwardSliceToPartition(Value v,
-     auto onlyUsedByAtomicStore = [](Value v) {
-       SetVector<Operation *> forwardSlice;
-       getForwardSlice(v, &forwardSlice);
--      Operation *atomicStore = nullptr;
-+      Operation *atomicStore;
-       for (auto op : forwardSlice) {
-         if (isa<AtomicRMWOp, DescriptorReduceOp>(op)) {
-           atomicStore = op;
