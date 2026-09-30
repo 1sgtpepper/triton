@@ -245,15 +245,15 @@ jobs:
 
       - name: Probe original and eligible N shapes
         run: |
-          for spec in '128 1' '256 1' '256 0'; do
+          for spec in '128 1 0' '256 1 0' '128 1 1' '256 1 1' '256 0 1'; do
             set -- $spec
-            case_name="n${1}-axis${2}"
+            case_name="n${1}-axis${2}-gather${3}"
             set +e
-            python3 harness/validation/check_gather_edge.py "$1" "$2" > "${case_name}.log" 2>&1
+            python3 harness/validation/check_gather_edge.py "$1" "$2" "$3" > "${case_name}.log" 2>&1
             status=$?
             set -e
             printf '%s: exit %s\n' "$case_name" "$status"
-            rg -n 'LLVM ERROR|Pipeline failed|warp_specialize retained|RuntimeError|AssertionError' "${case_name}.log" | tail -8 || true
+            grep -nE 'LLVM ERROR|Pipeline failed|warp_specialize retained|RuntimeError|AssertionError' "${case_name}.log" | tail -8 || true
           done
 
       - name: Save probe logs
