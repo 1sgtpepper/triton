@@ -1,0 +1,450 @@
+diff --git a/python/test/unit/language/test_compile_only.py b/python/test/unit/language/test_compile_only.py
+index 0495e4548..07b1d9437 100644
+--- a/python/test/unit/language/test_compile_only.py
++++ b/python/test/unit/language/test_compile_only.py
+@@ -64,7 +64,7 @@ def test_topk_valid_k(k):
+     triton.compile(src, target=GPUTarget("cuda", 90, 32))
+ 
+ 
+-def test_compile_only_ws_gather_falls_back():
++def test_compile_only_ws_gather_partitions_orthogonal_axis():
+     src = ASTSource(
+         fn=gather_before_dot_ws_kernel,
+         signature={"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp32"},
+@@ -76,6 +76,21 @@ def test_compile_only_ws_gather_falls_back():
+         options={"num_warps": 4, "num_stages": 3},
+     )
+     assert "tt.gather" in compiled.asm["ttgir"]
++    assert "ttg.warp_specialize" in compiled.asm["ttgir"]
++
++
++def test_compile_only_ws_gather_multi_cta_falls_back():
++    src = ASTSource(
++        fn=gather_before_dot_ws_kernel,
++        signature={"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp32"},
++        constexprs={"M": 256, "N": 128, "K": 128},
++    )
++    compiled = triton.compile(
++        src,
++        target=GPUTarget("cuda", 90, 32),
++        options={"num_warps": 4, "num_stages": 3, "num_ctas": 2},
++    )
++    assert "tt.gather" in compiled.asm["ttgir"]
+     assert "ttg.warp_specialize" not in compiled.asm["ttgir"]
+ 
+ 
+diff --git a/python/test/unit/language/test_warp_specialization.py b/python/test/unit/language/test_warp_specialization.py
+index 0c0d08dee..d70c64436 100644
+--- a/python/test/unit/language/test_warp_specialization.py
++++ b/python/test/unit/language/test_warp_specialization.py
+@@ -27,7 +27,7 @@ def _assert_clc_ws_ir(compiled):
+ 
+ @triton.jit
+ def gather_ws_kernel(a_ptr, b_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
+-                     WARP_SPECIALIZE: tl.constexpr):
++                     WARP_SPECIALIZE: tl.constexpr, GATHER_AXIS: tl.constexpr):
+     om = tl.arange(0, M)
+     on = tl.arange(0, N)
+     ok = tl.arange(0, K)
+@@ -35,15 +35,16 @@ def gather_ws_kernel(a_ptr, b_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, K:
+     for i in tl.range(0, 4, warp_specialize=WARP_SPECIALIZE):
+         a = tl.load(a_ptr + om[:, None] * K + ok[None, :] + i * M * K)
+         b = tl.load(b_ptr + ok[:, None] * N + on[None, :] + i * K * N)
+-        idx = tl.full([M, K], 1, tl.int32)
+-        a = tl.gather(a, idx, axis=1)
++        idx = (om[:, None] + ok[None, :]) % (K if GATHER_AXIS == 1 else M)
++        a = tl.gather(a, idx, axis=GATHER_AXIS)
+         acc += tl.dot(a, b)
+     tl.store(out_ptr + om[:, None] * N + on[None, :], acc)
+ 
+ 
+ @pytest.mark.skipif(is_hip() or not is_hopper(), reason="Requires Hopper CUDA")
+-def test_warp_specialize_gather_fallback_matches_plain_pipeline():
+-    M = N = K = 128
++@pytest.mark.parametrize("gather_axis,N", [(1, 128), (0, 256)], ids=["M-partition", "N-partition"])
++def test_warp_specialize_gather_orthogonal_matches_plain_pipeline(gather_axis, N):
++    M = K = 128
+     torch.manual_seed(11952)
+     a = torch.randn((4, M, K), device="cuda", dtype=torch.float16)
+     b = torch.randn((4, K, N), device="cuda", dtype=torch.float16)
+@@ -58,6 +59,7 @@ def test_warp_specialize_gather_fallback_matches_plain_pipeline():
+         N,
+         K,
+         True,
++        gather_axis,
+         num_warps=4,
+         num_stages=3,
+     )
+@@ -69,6 +71,7 @@ def test_warp_specialize_gather_fallback_matches_plain_pipeline():
+         N,
+         K,
+         False,
++        gather_axis,
+         num_warps=4,
+         num_stages=3,
+     )
+@@ -76,10 +79,12 @@ def test_warp_specialize_gather_fallback_matches_plain_pipeline():
+         return
+ 
+     assert "tt.gather" in kernel_ws.asm["ttgir"]
+-    assert "ttg.warp_specialize" not in kernel_ws.asm["ttgir"]
++    assert "ttg.warp_specialize" in kernel_ws.asm["ttgir"]
+     expected = torch.zeros_like(out_ws)
++    row_indices = (torch.arange(M, device="cuda")[:, None] +
++                   torch.arange(K, device="cuda")[None, :]) % (K if gather_axis == 1 else M)
+     for i in range(4):
+-        selected = a[i, :, 1:2].float().expand(M, K)
++        selected = torch.gather(a[i].float(), gather_axis, row_indices)
+         expected += selected @ b[i].float()
+     torch.testing.assert_close(out_ws, expected, atol=5e-2, rtol=5e-2)
+     torch.testing.assert_close(out_ws, out_plain, atol=5e-2, rtol=5e-2)
+diff --git a/test/Hopper/WarpSpecialization/ws_code_partition.mlir b/test/Hopper/WarpSpecialization/ws_code_partition.mlir
+index 17f07e126..80817e3c6 100644
+--- a/test/Hopper/WarpSpecialization/ws_code_partition.mlir
++++ b/test/Hopper/WarpSpecialization/ws_code_partition.mlir
+@@ -7,6 +7,8 @@
+ // CHECK: nvws.producer_acquire
+ // CHECK: ttg.async_copy_global_to_local
+ // CHECK: ttg.async_copy_global_to_local
++// CHECK: ttg.async_commit_group
++// CHECK: ttg.async_wait
+ // CHECK: nvws.producer_commit
+ // CHECK: partition0
+ // CHECK: nvws.consumer_wait
+@@ -69,6 +71,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
+ // CHECK: scf.for
+ // CHECK: nvws.producer_acquire
+ // CHECK: ttg.async_copy_global_to_local
++// CHECK: ttg.async_commit_group
++// CHECK: ttg.async_wait
+ // CHECK: nvws.producer_commit
+ // CHECK: nvws.producer_acquire
+ // CHECK: nvws.producer_acquire
+diff --git a/test/Hopper/WarpSpecialization/ws_gather_fallback.mlir b/test/Hopper/WarpSpecialization/ws_gather_fallback.mlir
+index b3a210e64..74846bbf9 100644
+--- a/test/Hopper/WarpSpecialization/ws_gather_fallback.mlir
++++ b/test/Hopper/WarpSpecialization/ws_gather_fallback.mlir
+@@ -1,7 +1,7 @@
+ // RUN: triton-opt %s --nvgpu-warp-specialization=num-stages=2 | FileCheck %s --check-prefix=CHECK
+ // RUN: triton-opt %s --nvgpu-warp-specialization=num-stages=2 | FileCheck %s --check-prefix=FALLBACK
+ 
+-// CHECK-LABEL: @gather_falls_back
++// CHECK-LABEL: @gather_selected_descriptor_falls_back
+ // CHECK: tt.gather
+ // CHECK: ttng.warp_group_dot
+ // CHECK: tt.descriptor_store
+@@ -52,7 +52,7 @@
+ // CHECK: tt.gather
+ // CHECK: ttng.warp_group_dot {{.*}} -> tensor<128x128xf32, #mma>
+ 
+-// FALLBACK-LABEL: @gather_falls_back
++// FALLBACK-LABEL: @gather_selected_descriptor_falls_back
+ // FALLBACK-NOT: ttg.warp_specialize
+ // FALLBACK-NOT: tt.warp_specialize
+ // FALLBACK-NOT: async_task_id
+@@ -144,29 +144,56 @@
+ // FALLBACK-NOT: async_task_id
+ // FALLBACK: tt.return
+ 
++// CHECK-LABEL: @gather_selected_descriptor_store_falls_back
++// CHECK: tt.gather
++// CHECK: ttng.warp_group_dot
++// CHECK: tt.descriptor_store
++
++// FALLBACK-LABEL: @gather_selected_descriptor_store_falls_back
++// FALLBACK-NOT: ttg.warp_specialize
++// FALLBACK: tt.gather
++// FALLBACK: tt.num_stages = 2 : i32
++// FALLBACK-NOT: ttg.warp_specialize
++// FALLBACK: tt.return
++
++
++// CHECK-LABEL: @gather_pointer_m_partition
++// CHECK: ttg.warp_specialize
++// CHECK: tt.gather {{.*}} -> tensor<64x64xf16
++// CHECK: tt.gather {{.*}} -> tensor<64x64xf16
++// CHECK: ttng.warp_group_dot {{.*}} -> tensor<64x128xf32
++// CHECK: ttng.warp_group_dot {{.*}} -> tensor<64x128xf32
++
++
+ #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+ #blocked1 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 4], order = [1, 0]}>
+ #mma = #ttg.nvidia_mma<{versionMajor = 3, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [16, 256, 16]}>
+ #shared = #ttg.nvmma_shared<{swizzlingByteWidth = 128, transposed = false, elementBitWidth = 16}>
+ #smem = #ttg.shared_memory
+ module attributes {"ttg.num-warps" = 4 : i32, ttg.target = "cuda:90"} {
+-  tt.func @gather_falls_back(%arg0: !tt.tensordesc<128x128xf16>, %arg1: !tt.tensordesc<128x128xf16>, %arg2: !tt.tensordesc<128x128xf16>, %iterations: i32) {
++  tt.func @gather_selected_descriptor_falls_back(%arg0: !tt.ptr<f16>, %arg1: !tt.ptr<f16>, %arg2: !tt.ptr<f16>, %iterations: i32) {
+     %c0 = arith.constant 0 : i32
+     %c1 = arith.constant 1 : i32
++    %c128 = arith.constant 128 : i32
++    %c1_i64 = arith.constant 1 : i64
++    %c128_i64 = arith.constant 128 : i64
++    %a_desc = tt.make_tensor_descriptor %arg0, [%c128, %c128], [%c128_i64, %c1_i64] : <f16>, <128x128xf16, #shared>
++    %b_desc = tt.make_tensor_descriptor %arg1, [%c128, %c128], [%c128_i64, %c1_i64] : <f16>, <128x128xf16, #shared>
++    %c_desc = tt.make_tensor_descriptor %arg2, [%c128, %c128], [%c128_i64, %c1_i64] : <f16>, <128x128xf16, #shared>
+     %indices = arith.constant dense<1> : tensor<128x128xi32, #blocked>
+     %init = arith.constant dense<0.000000e+00> : tensor<128x128xf32, #mma>
+     %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x128xf32, #mma> : i32 {
+-      %a = tt.descriptor_load %arg0[%i, %c0] : !tt.tensordesc<128x128xf16> -> tensor<128x128xf16, #blocked>
++      %a = tt.descriptor_load %a_desc[%i, %c0] : !tt.tensordesc<128x128xf16, #shared> -> tensor<128x128xf16, #blocked>
+       %gathered = tt.gather %a[%indices] {axis = 1 : i32} : (tensor<128x128xf16, #blocked>, tensor<128x128xi32, #blocked>) -> tensor<128x128xf16, #blocked>
+       %a_smem = ttg.local_alloc %gathered : (tensor<128x128xf16, #blocked>) -> !ttg.memdesc<128x128xf16, #shared, #smem>
+-      %b = tt.descriptor_load %arg1[%c0, %i] : !tt.tensordesc<128x128xf16> -> tensor<128x128xf16, #blocked1>
++      %b = tt.descriptor_load %b_desc[%c0, %i] : !tt.tensordesc<128x128xf16, #shared> -> tensor<128x128xf16, #blocked1>
+       %b_smem = ttg.local_alloc %b : (tensor<128x128xf16, #blocked1>) -> !ttg.memdesc<128x128xf16, #shared, #smem>
+       %dot = ttng.warp_group_dot %a_smem, %b_smem, %iter {inputPrecision = 0 : i32} : !ttg.memdesc<128x128xf16, #shared, #smem> * !ttg.memdesc<128x128xf16, #shared, #smem> -> tensor<128x128xf32, #mma>
+       scf.yield %dot : tensor<128x128xf32, #mma>
+     } {tt.num_stages = 2 : i32, tt.warp_specialize}
+     %out = arith.truncf %acc : tensor<128x128xf32, #mma> to tensor<128x128xf16, #mma>
+     %out_blocked = ttg.convert_layout %out : tensor<128x128xf16, #mma> -> tensor<128x128xf16, #blocked1>
+-    tt.descriptor_store %arg2[%c0, %c0], %out_blocked : !tt.tensordesc<128x128xf16>, tensor<128x128xf16, #blocked1>
++    tt.descriptor_store %c_desc[%c0, %c0], %out_blocked : !tt.tensordesc<128x128xf16, #shared>, tensor<128x128xf16, #blocked1>
+     tt.return
+   }
+ 
+@@ -349,23 +376,75 @@ module attributes {"ttg.num-warps" = 4 : i32, ttg.target = "cuda:90"} {
+     tt.return
+   }
+ 
+-  tt.func @gather_a_uses_safe_n_partition(%arg0: !tt.tensordesc<128x64xf16>, %arg1: !tt.tensordesc<64x256xf16>, %arg2: !tt.tensordesc<128x256xf16>, %iterations: i32) {
++  tt.func @gather_a_uses_safe_n_partition(%arg0: !tt.ptr<f16>, %arg1: !tt.ptr<f16>, %arg2: !tt.ptr<f16>, %iterations: i32) {
+     %c0 = arith.constant 0 : i32
+     %c1 = arith.constant 1 : i32
+-    %indices = arith.constant dense<1> : tensor<128x64xi32, #blocked>
++    %indices = arith.constant dense<0> : tensor<128x64xi32, #blocked>
++    %a_ptrs = tt.splat %arg0 : !tt.ptr<f16> -> tensor<128x64x!tt.ptr<f16>, #blocked>
++    %b_ptrs = tt.splat %arg1 : !tt.ptr<f16> -> tensor<64x256x!tt.ptr<f16>, #blocked1>
++    %out_ptrs = tt.splat %arg2 : !tt.ptr<f16> -> tensor<128x256x!tt.ptr<f16>, #blocked1>
+     %init = arith.constant dense<0.000000e+00> : tensor<128x256xf32, #mma>
+     %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x256xf32, #mma> : i32 {
+-      %a = tt.descriptor_load %arg0[%i, %c0] : !tt.tensordesc<128x64xf16> -> tensor<128x64xf16, #blocked>
+-      %gathered = tt.gather %a[%indices] {axis = 1 : i32} : (tensor<128x64xf16, #blocked>, tensor<128x64xi32, #blocked>) -> tensor<128x64xf16, #blocked>
++      %a = tt.load %a_ptrs : tensor<128x64x!tt.ptr<f16>, #blocked>
++      %gathered = tt.gather %a[%indices] {axis = 0 : i32} : (tensor<128x64xf16, #blocked>, tensor<128x64xi32, #blocked>) -> tensor<128x64xf16, #blocked>
+       %a_smem = ttg.local_alloc %gathered : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
+-      %b = tt.descriptor_load %arg1[%c0, %i] : !tt.tensordesc<64x256xf16> -> tensor<64x256xf16, #blocked1>
++      %b = tt.load %b_ptrs : tensor<64x256x!tt.ptr<f16>, #blocked1>
+       %b_smem = ttg.local_alloc %b : (tensor<64x256xf16, #blocked1>) -> !ttg.memdesc<64x256xf16, #shared, #smem>
+       %dot = ttng.warp_group_dot %a_smem, %b_smem, %iter {inputPrecision = 0 : i32} : !ttg.memdesc<128x64xf16, #shared, #smem> * !ttg.memdesc<64x256xf16, #shared, #smem> -> tensor<128x256xf32, #mma>
+       scf.yield %dot : tensor<128x256xf32, #mma>
+     } {tt.num_stages = 2 : i32, tt.warp_specialize}
+     %out = arith.truncf %acc : tensor<128x256xf32, #mma> to tensor<128x256xf16, #mma>
+     %out_blocked = ttg.convert_layout %out : tensor<128x256xf16, #mma> -> tensor<128x256xf16, #blocked1>
+-    tt.descriptor_store %arg2[%c0, %c0], %out_blocked : !tt.tensordesc<128x256xf16>, tensor<128x256xf16, #blocked1>
++    tt.store %out_ptrs, %out_blocked : tensor<128x256x!tt.ptr<f16>, #blocked1>
++    tt.return
++  }
++
++  tt.func @gather_selected_descriptor_store_falls_back(%arg0: !tt.ptr<f16>, %arg1: !tt.ptr<f16>, %arg2: !tt.ptr<f16>, %iterations: i32) {
++    %c0 = arith.constant 0 : i32
++    %c1 = arith.constant 1 : i32
++    %c128 = arith.constant 128 : i32
++    %c1_i64 = arith.constant 1 : i64
++    %c128_i64 = arith.constant 128 : i64
++    %out_desc = tt.make_tensor_descriptor %arg2, [%c128, %c128], [%c128_i64, %c1_i64] : <f16>, <128x128xf16, #shared>
++    %indices = arith.constant dense<1> : tensor<128x64xi32, #blocked>
++    %a_ptrs = tt.splat %arg0 : !tt.ptr<f16> -> tensor<128x64x!tt.ptr<f16>, #blocked>
++    %b_ptrs = tt.splat %arg1 : !tt.ptr<f16> -> tensor<64x128x!tt.ptr<f16>, #blocked1>
++    %init = arith.constant dense<0.000000e+00> : tensor<128x128xf32, #mma>
++    %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x128xf32, #mma> : i32 {
++      %a = tt.load %a_ptrs : tensor<128x64x!tt.ptr<f16>, #blocked>
++      %gathered = tt.gather %a[%indices] {axis = 1 : i32} : (tensor<128x64xf16, #blocked>, tensor<128x64xi32, #blocked>) -> tensor<128x64xf16, #blocked>
++      %a_smem = ttg.local_alloc %gathered : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
++      %b = tt.load %b_ptrs : tensor<64x128x!tt.ptr<f16>, #blocked1>
++      %b_smem = ttg.local_alloc %b : (tensor<64x128xf16, #blocked1>) -> !ttg.memdesc<64x128xf16, #shared, #smem>
++      %dot = ttng.warp_group_dot %a_smem, %b_smem, %iter {inputPrecision = 0 : i32} : !ttg.memdesc<128x64xf16, #shared, #smem> * !ttg.memdesc<64x128xf16, #shared, #smem> -> tensor<128x128xf32, #mma>
++      scf.yield %dot : tensor<128x128xf32, #mma>
++    } {tt.num_stages = 2 : i32, tt.warp_specialize}
++    %out = arith.truncf %acc : tensor<128x128xf32, #mma> to tensor<128x128xf16, #mma>
++    %out_blocked = ttg.convert_layout %out : tensor<128x128xf16, #mma> -> tensor<128x128xf16, #blocked1>
++    tt.descriptor_store %out_desc[%c0, %c0], %out_blocked : !tt.tensordesc<128x128xf16, #shared>, tensor<128x128xf16, #blocked1>
++    tt.return
++  }
++
++  tt.func @gather_pointer_m_partition(%arg0: !tt.ptr<f16>, %arg1: !tt.ptr<f16>, %arg2: !tt.ptr<f16>, %iterations: i32) {
++    %c0 = arith.constant 0 : i32
++    %c1 = arith.constant 1 : i32
++    %indices = arith.constant dense<1> : tensor<128x64xi32, #blocked>
++    %a_ptrs = tt.splat %arg0 : !tt.ptr<f16> -> tensor<128x64x!tt.ptr<f16>, #blocked>
++    %b_ptrs = tt.splat %arg1 : !tt.ptr<f16> -> tensor<64x128x!tt.ptr<f16>, #blocked1>
++    %out_ptrs = tt.splat %arg2 : !tt.ptr<f16> -> tensor<128x128x!tt.ptr<f16>, #blocked1>
++    %init = arith.constant dense<0.000000e+00> : tensor<128x128xf32, #mma>
++    %acc = scf.for %i = %c0 to %iterations step %c1 iter_args(%iter = %init) -> tensor<128x128xf32, #mma> : i32 {
++      %a = tt.load %a_ptrs : tensor<128x64x!tt.ptr<f16>, #blocked>
++      %gathered = tt.gather %a[%indices] {axis = 1 : i32} : (tensor<128x64xf16, #blocked>, tensor<128x64xi32, #blocked>) -> tensor<128x64xf16, #blocked>
++      %a_smem = ttg.local_alloc %gathered : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
++      %b = tt.load %b_ptrs : tensor<64x128x!tt.ptr<f16>, #blocked1>
++      %b_smem = ttg.local_alloc %b : (tensor<64x128xf16, #blocked1>) -> !ttg.memdesc<64x128xf16, #shared, #smem>
++      %dot = ttng.warp_group_dot %a_smem, %b_smem, %iter {inputPrecision = 0 : i32} : !ttg.memdesc<128x64xf16, #shared, #smem> * !ttg.memdesc<64x128xf16, #shared, #smem> -> tensor<128x128xf32, #mma>
++      scf.yield %dot : tensor<128x128xf32, #mma>
++    } {tt.num_stages = 2 : i32, tt.warp_specialize}
++    %out = arith.truncf %acc : tensor<128x128xf32, #mma> to tensor<128x128xf16, #mma>
++    %out_blocked = ttg.convert_layout %out : tensor<128x128xf16, #mma> -> tensor<128x128xf16, #blocked1>
++    tt.store %out_ptrs, %out_blocked : tensor<128x128x!tt.ptr<f16>, #blocked1>
+     tt.return
+   }
+ }
+diff --git a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSCodePartition.cpp b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSCodePartition.cpp
+index 93b293b12..e082ce043 100644
+--- a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSCodePartition.cpp
++++ b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSCodePartition.cpp
+@@ -1141,6 +1141,22 @@ void insertAsyncComm(
+       }
+     }
+ 
++    SmallVector<Value> copyTokens;
++    for (auto &channel : kv.second) {
++      auto *copyOp = copyOpMap.find(channel)->second.first;
++      if (auto copy = dyn_cast_if_present<ttg::AsyncCopyGlobalToLocalOp>(copyOp))
++        if (!llvm::is_contained(copyTokens, copy.getToken()))
++          copyTokens.push_back(copy.getToken());
++    }
++    Operation *copyWait = nullptr;
++    if (!copyTokens.empty()) {
++      builder.setInsertionPointAfter(tailProducer);
++      auto commit = builder.createWithAsyncTaskIds<ttg::AsyncCommitGroupOp>(
++          tailProducer->getLoc(), copyTokens);
++      copyWait = builder.createWithAsyncTaskIds<ttg::AsyncWaitOp>(
++          tailProducer->getLoc(), commit.getResult(), 0);
++    }
++
+     for (const auto &token : commChannel.tokens) {
+       if (commChannel.consumerBarriers.empty()) {
+         // Insert ProducerAcquireOp before the producer.
+@@ -1163,7 +1179,9 @@ void insertAsyncComm(
+         } else {
+           producerCommitPoint = getSameLevelOp(headConsumer, tailProducer);
+         }
+-        builder.setInsertionPointAfter(producerCommitPoint);
++        builder.setInsertionPointAfter(
++            copyWait && producerCommitPoint == tailProducer ? copyWait
++                                                             : producerCommitPoint);
+         builder.createWithAsyncTaskIds<ttnvws::ProducerCommitOp>(
+             tailProducer->getLoc(), token.second, bufferIdx);
+       }
+diff --git a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
+index 1c7a6c27d..446cb7766 100644
+--- a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
++++ b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
+@@ -204,6 +204,13 @@ static bool needToSlice(Value v, unsigned dim, int size) {
+   return shape.size() > dim && shape[dim] > size;
+ }
+ 
++// The current Gather lowering has no proven cross-CTA shard ownership.
++static bool canPartitionGather(GatherOp gatherOp, unsigned dim) {
++  return dim != DataPartitionScheme::noOpPartitionDim &&
++         dim != gatherOp.getAxis() &&
++         lookupNumCTAs(gatherOp.getOperation()) == 1;
++}
++
+ // Duplicate the op for different partition dims.
+ static bool rematerializeOp(Operation *op, DataPartitionScheme &partitionScheme,
+                             unsigned currentDim) {
+@@ -256,6 +263,14 @@ getBackwardSliceToPartition(Value v, DataPartitionScheme &partitionScheme,
+     }
+     partitionScheme.opPartitionDims[op] = currentDim;
+ 
++    if (auto constant = dyn_cast<arith::ConstantOp>(op)) {
++      if (currentDim != DataPartitionScheme::noOpPartitionDim) {
++        auto dense = dyn_cast<DenseElementsAttr>(constant.getValueAttr());
++        if (!dense || !dense.isSplat())
++          return DataPartitionResult::Unsupported;
++      }
++    }
++
+     // Flip dim when op is trans
+     if (auto transOp = dyn_cast<TransOp>(op)) {
+       currentDim = partitionScheme.flipPartitionDim(currentDim,
+@@ -336,9 +351,15 @@ getBackwardSliceToPartition(Value v, DataPartitionScheme &partitionScheme,
+                                            currentDim);
+       if (result != DataPartitionResult::Success)
+         return result;
+-    } else if (isa<GatherOp>(op)) {
+-      // The partitioner has no rule for slicing a Gather's source and indices.
+-      return DataPartitionResult::Unsupported;
++    } else if (auto gatherOp = dyn_cast<GatherOp>(op)) {
++      if (!canPartitionGather(gatherOp, currentDim))
++        return DataPartitionResult::Unsupported;
++      for (Value operand : gatherOp->getOperands()) {
++        auto result =
++            getBackwardSliceToPartition(operand, partitionScheme, currentDim);
++        if (result != DataPartitionResult::Success)
++          return result;
++      }
+     } else {
+       llvm_unreachable("Unexpected op");
+     }
+@@ -359,6 +380,9 @@ getBackwardSliceToPartition(Value v, DataPartitionScheme &partitionScheme,
+           getBackwardSliceToPartition(yieldArg, partitionScheme, currentDim);
+       if (result != DataPartitionResult::Success)
+         return result;
++    } else if (isa<triton::FuncOp>(bbAargOwner) &&
++               currentDim != DataPartitionScheme::noOpPartitionDim) {
++      return DataPartitionResult::Unsupported;
+     }
+   }
+ 
+@@ -377,7 +401,8 @@ getForwardSliceToPartition(Value v, DataPartitionScheme &partitionScheme,
+   // Recusively process operands forwards.
+   unsigned originalDim = currentDim;
+   for (Operation *depOp : v.getUsers()) {
+-    if (isa<GatherOp>(depOp))
++    if (auto gatherOp = dyn_cast<GatherOp>(depOp);
++        gatherOp && !canPartitionGather(gatherOp, originalDim))
+       return DataPartitionResult::Unsupported;
+ 
+     currentDim = originalDim;
+@@ -512,7 +537,7 @@ getSliceToPartition(Value root, DataPartitionScheme &partitionScheme,
+     if (currentDim == DataPartitionScheme::noOpPartitionDim)
+       continue;
+     if (op->hasTrait<OpTrait::Elementwise>() ||
+-        isa<StoreOp, DescriptorStoreOp, AtomicRMWOp>(op)) {
++        isa<StoreOp, DescriptorStoreOp, AtomicRMWOp, GatherOp>(op)) {
+       for (OpOperand &operand : op->getOpOperands()) {
+         result = getBackwardSliceToPartition(operand.get(), partitionScheme,
+                                              currentDim);
+@@ -648,6 +673,17 @@ computePartitionScheme(triton::FuncOp &funcOp,
+ 
+       auto result = getSliceToPartition(accumulator, trialPartitionScheme,
+                                         partitionDim[i]);
++      // Keep newly admitted Gather trials out of the descriptor coordinate
++      // slicer, whose positional offsets are not preserved for shared values.
++      if (result == DataPartitionResult::Success) {
++        bool hasGather = false, hasDescriptor = false;
++        for (Operation *candidate : trialPartitionScheme.ops) {
++          hasGather |= isa<GatherOp>(candidate);
++          hasDescriptor |= isa<DescriptorLoadOp, DescriptorStoreOp>(candidate);
++        }
++        if (hasGather && hasDescriptor)
++          result = DataPartitionResult::Unsupported;
++      }
+       if (result == DataPartitionResult::Success) {
+         success = true;
+         partitionScheme = trialPartitionScheme;
+@@ -887,7 +923,7 @@ static Operation *sliceOp(Operation *op, int offset, IRMapping &mappings,
+   if ((dim == DataPartitionScheme::noOpPartitionDim) ||
+       op->hasTrait<OpTrait::Elementwise>() ||
+       isa<ConvertLayoutOp, BroadcastOp, SplatOp, ExpandDimsOp, FpToFpOp,
+-          AtomicRMWOp, LocalAllocOp, SplitOp, JoinOp, ReshapeOp>(op)) {
++          AtomicRMWOp, GatherOp, LocalAllocOp, SplitOp, JoinOp, ReshapeOp>(op)) {
+     for (Value operand : op->getOperands())
+       sliceOp(operand, offset, mappings, reverseMappings, partitionScheme);
+     newOp = cloneAndSetResultType(op);
+diff --git a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSLowerToken.cpp b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSLowerToken.cpp
+index 2faf94688..6a64e9776 100644
+--- a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSLowerToken.cpp
++++ b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSLowerToken.cpp
+@@ -66,9 +66,9 @@ void processProducerCommitOp(OpBuilder &builder, ttnvws::ProducerCommitOp op,
+   auto loc = op.getLoc();
+   ttng::ArriveBarrierOp arriveOp;
+ 
+-  if (loadType == ttnvws::TokenLoadType::TMALoadOp) {
+-    // Get the count from the barriers: trace the local_alloc for the barrier
+-    // then find the count from init_barrier
++  if (loadType == ttnvws::TokenLoadType::TMALoadOp ||
++      loadType == ttnvws::TokenLoadType::AsyncLoadOp) {
++    // Async copies are committed and waited on by the producer before arrival.
+     arriveOp = ttng::ArriveBarrierOp::create(builder, loc, bufferFull, fullCnt);
+   } else {
+     llvm::report_fatal_error("unsupported load type for producer commit");

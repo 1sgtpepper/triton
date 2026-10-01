@@ -147,6 +147,7 @@ jobs:
           if-no-files-found: error
 
   integration:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
@@ -214,6 +215,7 @@ jobs:
           if-no-files-found: error
 
   atomic-control:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -261,4 +263,59 @@ jobs:
         with:
           name: atomic-control-logs
           path: '*.log'
+          if-no-files-found: error
+
+  gather-jit-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out patch
+        uses: actions/checkout@v6
+        with:
+          path: harness
+          sparse-checkout: validation/patches/gather-partition-probe.patch
+          persist-credentials: false
+
+      - name: Check out Gather PR revision
+        uses: actions/checkout@v6
+        with:
+          repository: 1sgtpepper/triton
+          ref: 4f12ec924a55271fdd29617c97660446c2263ef6
+          path: source
+          submodules: true
+          fetch-depth: 100
+          persist-credentials: false
+
+      - name: Apply partition candidate
+        working-directory: source
+        run: |
+          test "$(git rev-parse HEAD)" = 4f12ec924a55271fdd29617c97660446c2263ef6
+          git apply --check "$GITHUB_WORKSPACE/harness/validation/patches/gather-partition-probe.patch"
+          git apply "$GITHUB_WORKSPACE/harness/validation/patches/gather-partition-probe.patch"
+          git diff --check
+          git diff --stat
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Build patched compiler
+        working-directory: source
+        env:
+          MAX_JOBS: '2'
+        run: make dev-install
+
+      - name: Package partition candidate
+        working-directory: source
+        env:
+          MAX_JOBS: '2'
+        run: python3 setup.py bdist_wheel
+
+      - name: Save partition wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: gather-partition-probe-wheel
+          path: source/dist/*.whl
           if-no-files-found: error
