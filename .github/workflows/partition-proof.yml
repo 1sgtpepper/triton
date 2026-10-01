@@ -11,7 +11,6 @@ permissions:
 
 jobs:
   gather:
-    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
@@ -63,7 +62,7 @@ jobs:
           build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
           ninja -C "$build_dir" triton-opt
           cd "$build_dir"
-          lit -v test/Hopper/WarpSpecialization/ws_gather_fallback.mlir
+          lit -v test/Hopper/WarpSpecialization/ws_gather_fallback.mlir test/Hopper/WarpSpecialization/ws_data_partition.mlir
 
       - name: Package Gather candidate
         working-directory: source
@@ -79,7 +78,6 @@ jobs:
           if-no-files-found: error
 
   atomic:
-    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
@@ -147,7 +145,6 @@ jobs:
           if-no-files-found: error
 
   integration:
-    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
@@ -266,6 +263,7 @@ jobs:
           if-no-files-found: error
 
   gather-jit-probe:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 180
 

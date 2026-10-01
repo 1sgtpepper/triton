@@ -549,21 +549,32 @@ index 000000000..5306f2c3e
 +  }
 +}
 diff --git a/test/Hopper/WarpSpecialization/ws_data_partition.mlir b/test/Hopper/WarpSpecialization/ws_data_partition.mlir
-index c3871b0c5..5a78c8f91 100644
+index c3871b0c5..13bc29ad7 100644
 --- a/test/Hopper/WarpSpecialization/ws_data_partition.mlir
 +++ b/test/Hopper/WarpSpecialization/ws_data_partition.mlir
-@@ -47,62 +47,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
+@@ -47,57 +47,36 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
  
  // -----
  
 -// CHECK-LABEL: @cross_dim_partition
 -#blocked = #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 4], order = [0, 1]}>
--#blocked1 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 4], order = [1, 0]}>
++// An unsupported M trial must not prevent a supported N trial.
++// CHECK-LABEL: @gather_rejects_m_then_partitions_n
++// CHECK: tt.gather
++// CHECK: tt.load {{.*}} : tensor<64x128x!tt.ptr<f16>
++// CHECK: tt.load {{.*}} : tensor<64x128x!tt.ptr<f16>
++// CHECK: ttng.warp_group_dot {{.*}} : !ttg.memdesc<128x64xf16, {{.*}} * !ttg.memdesc<64x128xf16, {{.*}} -> tensor<128x128xf32, #mma>
++// CHECK: ttng.warp_group_dot {{.*}} : !ttg.memdesc<128x64xf16, {{.*}} * !ttg.memdesc<64x128xf16, {{.*}} -> tensor<128x128xf32, #mma>
++// CHECK-NOT: tt.gather
++// CHECK: tt.return
++#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+ #blocked1 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 4], order = [1, 0]}>
 -#mma = #ttg.nvidia_mma<{versionMajor = 3, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [16, 128, 16]}>
--#shared = #ttg.nvmma_shared<{swizzlingByteWidth = 128, transposed = false, elementBitWidth = 16}>
++#mma = #ttg.nvidia_mma<{versionMajor = 3, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [16, 256, 16]}>
+ #shared = #ttg.nvmma_shared<{swizzlingByteWidth = 128, transposed = false, elementBitWidth = 16}>
 -#shared1 = #ttg.nvmma_shared<{swizzlingByteWidth = 128, transposed = true, elementBitWidth = 16}>
--#smem = #ttg.shared_memory
--module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+ #smem = #ttg.shared_memory
+ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
 -  tt.func public @cross_dim_partition(%arg0: !tt.ptr<bf16> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<i32> {tt.divisibility = 16 : i32}, %arg2: !tt.ptr<bf16> {tt.divisibility = 16 : i32}, %arg3: !tt.ptr<bf16> {tt.divisibility = 16 : i32}, %arg4: !tt.ptr<bf16> {tt.divisibility = 16 : i32}, %arg5: !tt.ptr<bf16> {tt.divisibility = 16 : i32}, %arg6: !tt.ptr<i8> {tt.divisibility = 16 : i32}, %arg7: f32, %arg8: i32, %arg9: i32 {tt.divisibility = 16 : i32}, %arg10: i32) {
 -    %cst = arith.constant {async_task_id = array<i32: 1, 2>} dense<0.000000e+00> : tensor<128x128xf32, #mma>
 -    %cst_0 = arith.constant {async_task_id = array<i32: 1, 2>} dense<true> : tensor<128x128xi1, #blocked>
@@ -607,14 +618,24 @@ index c3871b0c5..5a78c8f91 100644
 -    %21 = tt.splat %arg4 {async_task_id = array<i32: 1, 2>} : !tt.ptr<bf16> -> tensor<1x128x!tt.ptr<bf16>, #blocked>
 -    %22 = tt.broadcast %21 {async_task_id = array<i32: 1, 2>} : tensor<1x128x!tt.ptr<bf16>, #blocked> -> tensor<128x128x!tt.ptr<bf16>, #blocked>
 -    %23 = tt.atomic_rmw fadd, relaxed, gpu, %22, %20, %cst_0 {async_task_id = array<i32: 1, 2>} : (tensor<128x128x!tt.ptr<bf16>, #blocked>, tensor<128x128xbf16, #blocked>, tensor<128x128xi1, #blocked>) -> tensor<128x128xbf16, #blocked>
--    tt.return
--  }
--}
--
--// -----
- 
- // Test that tt.split, tt.join, tt.reshape, and tt.trans are correctly partitioned along the M dimension.
- // CHECK-LABEL: @test_split_join_reshape_trans_partition
++  tt.func public @gather_rejects_m_then_partitions_n(%a_ptr: !tt.ptr<f16>, %b_ptr: !tt.ptr<f16>, %out_ptr: !tt.ptr<f16>) {
++    %indices = arith.constant {async_task_id = array<i32: 0>} dense<1> : tensor<128x64xi32, #blocked>
++    %a_ptrs = tt.splat %a_ptr {async_task_id = array<i32: 0>} : !tt.ptr<f16> -> tensor<128x64x!tt.ptr<f16>, #blocked>
++    %a = tt.load %a_ptrs {async_task_id = array<i32: 0>} : tensor<128x64x!tt.ptr<f16>, #blocked>
++    %gathered = tt.gather %a[%indices] {async_task_id = array<i32: 0>, axis = 0 : i32} : (tensor<128x64xf16, #blocked>, tensor<128x64xi32, #blocked>) -> tensor<128x64xf16, #blocked>
++    %a_smem = ttg.local_alloc %gathered {async_task_id = array<i32: 1, 2>} : (tensor<128x64xf16, #blocked>) -> !ttg.memdesc<128x64xf16, #shared, #smem>
++    %b_ptrs = tt.splat %b_ptr {async_task_id = array<i32: 0>} : !tt.ptr<f16> -> tensor<64x256x!tt.ptr<f16>, #blocked1>
++    %b = tt.load %b_ptrs {async_task_id = array<i32: 0>} : tensor<64x256x!tt.ptr<f16>, #blocked1>
++    %b_smem = ttg.local_alloc %b {async_task_id = array<i32: 1, 2>} : (tensor<64x256xf16, #blocked1>) -> !ttg.memdesc<64x256xf16, #shared, #smem>
++    %init = arith.constant {async_task_id = array<i32: 1, 2>} dense<0.000000e+00> : tensor<128x256xf32, #mma>
++    %dot = ttng.warp_group_dot %a_smem, %b_smem, %init {async_task_id = array<i32: 1, 2>, inputPrecision = 0 : i32} : !ttg.memdesc<128x64xf16, #shared, #smem> * !ttg.memdesc<64x256xf16, #shared, #smem> -> tensor<128x256xf32, #mma>
++    %out = arith.truncf %dot {async_task_id = array<i32: 1, 2>} : tensor<128x256xf32, #mma> to tensor<128x256xf16, #mma>
++    %out_blocked = ttg.convert_layout %out {async_task_id = array<i32: 1, 2>} : tensor<128x256xf16, #mma> -> tensor<128x256xf16, #blocked1>
++    %out_ptrs = tt.splat %out_ptr {async_task_id = array<i32: 1, 2>} : !tt.ptr<f16> -> tensor<128x256x!tt.ptr<f16>, #blocked1>
++    tt.store %out_ptrs, %out_blocked {async_task_id = array<i32: 1, 2>} : tensor<128x256x!tt.ptr<f16>, #blocked1>
+     tt.return
+   }
+ }
 diff --git a/test/Hopper/WarpSpecialization/ws_gather_fallback.mlir b/test/Hopper/WarpSpecialization/ws_gather_fallback.mlir
 index b3a210e64..2f650bba6 100644
 --- a/test/Hopper/WarpSpecialization/ws_gather_fallback.mlir
@@ -655,8 +676,21 @@ index b3a210e64..2f650bba6 100644
 -    tt.return
 -  }
  }
+diff --git a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization.cpp b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization.cpp
+index 027cedf46..86e28c7d6 100644
+--- a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization.cpp
++++ b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization.cpp
+@@ -95,6 +95,8 @@ public:
+         break;
+       case DataPartitionResult::Retry:
+         break;
++      case DataPartitionResult::FailedAfterRewrite:
++        return signalPassFailure();
+       case DataPartitionResult::Unsupported:
+         if (hasPreexistingTaskIds) {
+           funcOp.emitError()
 diff --git a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
-index 1c7a6c27d..698e2d27d 100644
+index 1c7a6c27d..9136e3a35 100644
 --- a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
 +++ b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.cpp
 @@ -5,6 +5,7 @@
@@ -730,3 +764,36 @@ index 1c7a6c27d..698e2d27d 100644
    if (result == DataPartitionResult::Retry) {
      if (numConsumerGroups > 1) {
        LDBG("computePartitionScheme failed when requested");
+@@ -1393,7 +1435,9 @@ DataPartitionResult doDataPartition(triton::FuncOp &funcOp,
+   // Make sure original ops are not used
+   if (!doDeepCleanup(funcOp, partitionScheme)) {
+     LDBG("final cleanup failed");
+-    return DataPartitionResult::Retry;
++    funcOp.emitError(
++        "warp-specialization data partition failed after rewriting");
++    return DataPartitionResult::FailedAfterRewrite;
+   }
+ 
+   // Make sure original ops are not used
+diff --git a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.h b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.h
+index eeb059e45..8c4c7697c 100644
+--- a/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.h
++++ b/third_party/nvidia/hopper/lib/Transforms/WarpSpecialization/WSDataPartition.h
+@@ -5,9 +5,14 @@
+ 
+ namespace mlir {
+ 
+-// Unsupported is reported before data-partition rewriting so the pass can
+-// remove generated task IDs and loop markers before falling back.
+-enum class DataPartitionResult { Success, Retry, Unsupported };
++// Retry and Unsupported precede structural rewriting. A failed rewrite must
++// terminate the pass because removing task IDs cannot undo it.
++enum class DataPartitionResult {
++  Success,
++  Retry,
++  Unsupported,
++  FailedAfterRewrite
++};
+ 
+ DataPartitionResult doDataPartition(triton::FuncOp &funcOp,
+                                     unsigned numConsumerGroups);
