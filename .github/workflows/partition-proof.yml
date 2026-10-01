@@ -147,7 +147,6 @@ jobs:
           if-no-files-found: error
 
   integration:
-    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
@@ -193,13 +192,13 @@ jobs:
         working-directory: source
         run: python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py::test_compile_only_ws_gather_falls_back python/test/unit/language/test_compile_only.py::test_compile_only_ws_atomic_rmw_falls_back
 
-      - name: Test both partition fixture families
+      - name: Test warp-specialization fixtures
         working-directory: source
         run: |
           build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
           ninja -C "$build_dir" triton-opt
           cd "$build_dir"
-          lit -v test/Hopper/WarpSpecialization/ws_gather_fallback.mlir test/Hopper/WarpSpecialization/ws_gather_preexisting_ids.mlir test/Hopper/WarpSpecialization/ws_atomic_rmw_partition_reject.mlir test/Hopper/WarpSpecialization/ws_atomic_rmw_fallback.mlir test/Hopper/WarpSpecialization/ws_atomic_rmw_preexisting_ids.mlir
+          lit -v test/Hopper/WarpSpecialization
 
       - name: Package integrated candidate
         working-directory: source
