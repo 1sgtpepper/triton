@@ -1,0 +1,58 @@
+name: Gather partition validation
+
+on:
+  push:
+    branches:
+      - validation/ws-gather-debug-2026-10-03
+
+permissions:
+  contents: read
+
+jobs:
+  gather:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out Gather PR head
+        uses: actions/checkout@v6
+        with:
+          repository: 1sgtpepper/triton
+          ref: b8fbc574c572bd83ccedab83e29fcb99ded9b87e
+          submodules: true
+          persist-credentials: false
+
+      - name: Check exact revision
+        run: test "$(git rev-parse HEAD)" = b8fbc574c572bd83ccedab83e29fcb99ded9b87e
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Build compiler
+        env:
+          MAX_JOBS: '2'
+        run: make dev-install
+
+      - name: Compile Gather reproducer
+        run: python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py::test_compile_only_ws_gather_falls_back
+
+      - name: Run Gather partition fixtures
+        run: |
+          build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
+          ninja -C "$build_dir" triton-opt
+          cd "$build_dir"
+          lit -v test/Hopper/WarpSpecialization/ws_gather_fallback.mlir test/Hopper/WarpSpecialization/ws_data_partition.mlir
+
+      - name: Package exact-head wheel
+        env:
+          MAX_JOBS: '2'
+        run: python3 setup.py bdist_wheel
+
+      - name: Save wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: gather-debug-wheel
+          path: dist/*.whl
+          if-no-files-found: error
