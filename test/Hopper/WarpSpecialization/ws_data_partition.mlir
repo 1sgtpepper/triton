@@ -49,11 +49,18 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 // An unsupported M trial must not prevent a supported N trial.
 // CHECK-LABEL: @gather_rejects_m_then_partitions_n
-// CHECK: tt.gather
+// CHECK-NOT: tt.gather
+// CHECK: %[[#GATHER:]] = tt.gather
+// CHECK-NOT: tt.gather
+// CHECK: %[[#A_SMEM:]] = ttg.local_alloc %[[#GATHER]]
+// CHECK-NOT: tt.gather
 // CHECK: tt.load {{.*}} : tensor<64x128x!tt.ptr<f16>
+// CHECK-NOT: tt.gather
 // CHECK: tt.load {{.*}} : tensor<64x128x!tt.ptr<f16>
-// CHECK: ttng.warp_group_dot {{.*}} : !ttg.memdesc<128x64xf16, {{.*}} * !ttg.memdesc<64x128xf16, {{.*}} -> tensor<128x128xf32, #mma>
-// CHECK: ttng.warp_group_dot {{.*}} : !ttg.memdesc<128x64xf16, {{.*}} * !ttg.memdesc<64x128xf16, {{.*}} -> tensor<128x128xf32, #mma>
+// CHECK-NOT: tt.gather
+// CHECK: ttng.warp_group_dot %[[#A_SMEM]], {{.*}} : !ttg.memdesc<128x64xf16, {{.*}} * !ttg.memdesc<64x128xf16, {{.*}} -> tensor<128x128xf32, #mma>
+// CHECK-NOT: tt.gather
+// CHECK: ttng.warp_group_dot %[[#A_SMEM]], {{.*}} : !ttg.memdesc<128x64xf16, {{.*}} * !ttg.memdesc<64x128xf16, {{.*}} -> tensor<128x128xf32, #mma>
 // CHECK-NOT: tt.gather
 // CHECK: tt.return
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
