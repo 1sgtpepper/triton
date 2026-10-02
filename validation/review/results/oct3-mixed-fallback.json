@@ -1,0 +1,8 @@
+{
+  "device": "NVIDIA H100 80GB HBM3, 580.95.05, 9.0",
+  "wheel_sha256": "01ccbc6e4b95c5531299166a286a40921df7c57d163234951107e471fb760106",
+  "test_sha256": "1cc2ed3891efb9183826e7ef931c4503bdb256159ff2d5f437f92906fd971cbd",
+  "exit_status": 0,
+  "stdout": "============================= test session starts ==============================\nplatform linux -- Python 3.12.1, pytest-8.4.2, pluggy-1.6.0\nrootdir: /opt\ncollected 1 item\n\n../opt/test_warp_specialization.py .\n\n============================== 1 passed in 21.92s ==============================\n",
+  "stderr": ""
+}

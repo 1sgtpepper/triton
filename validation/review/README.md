@@ -1,5 +1,7 @@
 # Warp-specialization partition recovery: remote review packet
 
+**Current review:** [October 3 source and validation update](2026-10-03-update.md). The status and revision table below record the earlier October 2 snapshot.
+
 ## Verdict and provenance
 
 The bounded Gather and AtomicRMW fallbacks are validated for the reported kernels and listed compiler fixtures. The two upstream pull requests are not ready for unconditional sign-off: the Gather review still requests changes, and a deterministic execution test for the exceptional post-rewrite cleanup failure has not been constructed.
