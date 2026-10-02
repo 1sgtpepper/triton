@@ -1,0 +1,58 @@
+name: Warp partition style validation
+
+on:
+  push:
+    branches:
+      - validation/ws-partition-style-2026-10-03
+
+permissions:
+  contents: read
+
+jobs:
+  gather:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out Gather PR head
+        uses: actions/checkout@v6
+        with:
+          repository: 1sgtpepper/triton
+          ref: 3ccb92d230a78da486895b19321cb669e7b9a140
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+      - name: Check exact revision
+        run: test "$(git rev-parse HEAD)" = 3ccb92d230a78da486895b19321cb669e7b9a140
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Run repository hooks
+        run: |
+          python3 -m pip install pre-commit==4.0.1
+          pre-commit run --from-ref 895801b66e43eb6784624d9e68870af3b8fd78d8 --to-ref HEAD --show-diff-on-failure
+          git diff --exit-code
+
+  atomic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out Atomic PR head
+        uses: actions/checkout@v6
+        with:
+          repository: 1sgtpepper/triton
+          ref: 1d86ea9ec8f4210dcebec0347cda4d1b2c950b7c
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+      - name: Check exact revision
+        run: test "$(git rev-parse HEAD)" = 1d86ea9ec8f4210dcebec0347cda4d1b2c950b7c
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Run repository hooks
+        run: |
+          python3 -m pip install pre-commit==4.0.1
+          pre-commit run --from-ref 895801b66e43eb6784624d9e68870af3b8fd78d8 --to-ref HEAD --show-diff-on-failure
+          git diff --exit-code
