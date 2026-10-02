@@ -1,0 +1,58 @@
+name: Warp partition integration validation
+
+on:
+  push:
+    branches:
+      - validation/ws-partition-integration-ci-2026-10-03
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out integrated revision
+        uses: actions/checkout@v6
+        with:
+          repository: 1sgtpepper/triton
+          ref: fe095a9dcecf7cbe40f2e3e85bf83ead43fc89e8
+          submodules: true
+          persist-credentials: false
+
+      - name: Check exact revision
+        run: test "$(git rev-parse HEAD)" = fe095a9dcecf7cbe40f2e3e85bf83ead43fc89e8
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Build compiler
+        env:
+          MAX_JOBS: '2'
+        run: make dev-install
+
+      - name: Compile both reproducers
+        run: python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py::test_compile_only_ws_gather_falls_back python/test/unit/language/test_compile_only.py::test_compile_only_ws_atomic_rmw_falls_back
+
+      - name: Run Hopper warp partition fixtures
+        run: |
+          build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
+          ninja -C "$build_dir" triton-opt
+          cd "$build_dir"
+          lit -v test/Hopper/WarpSpecialization
+
+      - name: Package exact-head wheel
+        env:
+          MAX_JOBS: '2'
+        run: python3 setup.py bdist_wheel
+
+      - name: Save wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-head-wheel
+          path: dist/*.whl
+          if-no-files-found: error
