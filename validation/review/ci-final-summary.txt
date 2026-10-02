@@ -1,26 +1,23 @@
-Selected unmodified result lines from fork Actions run 36830926780 (full log at the run URL).
-integration	UNKNOWN STEP	2026-10-01T08:29:20.8829601Z ============================== 2 passed in 3.09s ===============================
-integration	UNKNOWN STEP	2026-10-01T08:29:21.3315180Z -- Testing: 9 tests, 4 workers --
-integration	UNKNOWN STEP	2026-10-01T08:29:21.3721622Z PASS: TRITON :: Hopper/WarpSpecialization/ws_atomic_rmw_preexisting_ids.mlir (1 of 9)
-integration	UNKNOWN STEP	2026-10-01T08:29:21.3740791Z PASS: TRITON :: Hopper/WarpSpecialization/ws_atomic_rmw_partition_reject.mlir (2 of 9)
-integration	UNKNOWN STEP	2026-10-01T08:29:21.3947898Z PASS: TRITON :: Hopper/WarpSpecialization/ws_code_partition.mlir (3 of 9)
-integration	UNKNOWN STEP	2026-10-01T08:29:21.4120149Z PASS: TRITON :: Hopper/WarpSpecialization/ws_data_partition.mlir (4 of 9)
-integration	UNKNOWN STEP	2026-10-01T08:29:21.4191088Z PASS: TRITON :: Hopper/WarpSpecialization/ws_gather_preexisting_ids.mlir (5 of 9)
-integration	UNKNOWN STEP	2026-10-01T08:29:21.4344425Z PASS: TRITON :: Hopper/WarpSpecialization/ws_atomic_rmw_fallback.mlir (6 of 9)
-integration	UNKNOWN STEP	2026-10-01T08:29:21.4360854Z PASS: TRITON :: Hopper/WarpSpecialization/ws_task_id_propagation.mlir (7 of 9)
-integration	UNKNOWN STEP	2026-10-01T08:29:21.4380664Z PASS: TRITON :: Hopper/WarpSpecialization/ws_task_partition.mlir (8 of 9)
-integration	UNKNOWN STEP	2026-10-01T08:29:21.4393633Z PASS: TRITON :: Hopper/WarpSpecialization/ws_gather_fallback.mlir (9 of 9)
-integration	UNKNOWN STEP	2026-10-01T08:29:21.4428030Z Total Discovered Tests: 9
-integration	UNKNOWN STEP	2026-10-01T08:29:21.4428291Z   Passed: 9 (100.00%)
-atomic	UNKNOWN STEP	2026-10-01T08:11:51.8628853Z ============================== 1 passed in 2.28s ===============================
-atomic	UNKNOWN STEP	2026-10-01T08:11:52.4550759Z -- Testing: 2 tests, 2 workers --
-atomic	UNKNOWN STEP	2026-10-01T08:11:52.4781991Z PASS: TRITON :: Hopper/WarpSpecialization/ws_atomic_rmw_partition_reject.mlir (1 of 2)
-atomic	UNKNOWN STEP	2026-10-01T08:11:52.5841924Z PASS: TRITON :: Hopper/WarpSpecialization/ws_atomic_rmw_fallback.mlir (2 of 2)
-atomic	UNKNOWN STEP	2026-10-01T08:11:52.5861970Z Total Discovered Tests: 2
-atomic	UNKNOWN STEP	2026-10-01T08:11:52.5862488Z   Passed: 2 (100.00%)
-gather	UNKNOWN STEP	2026-10-01T08:26:53.1850375Z ============================== 1 passed in 2.13s ===============================
-gather	UNKNOWN STEP	2026-10-01T08:26:53.5983609Z -- Testing: 2 tests, 2 workers --
-gather	UNKNOWN STEP	2026-10-01T08:26:53.6489659Z PASS: TRITON :: Hopper/WarpSpecialization/ws_data_partition.mlir (1 of 2)
-gather	UNKNOWN STEP	2026-10-01T08:26:53.6595610Z PASS: TRITON :: Hopper/WarpSpecialization/ws_gather_fallback.mlir (2 of 2)
-gather	UNKNOWN STEP	2026-10-01T08:26:53.6620990Z Total Discovered Tests: 2
-gather	UNKNOWN STEP	2026-10-01T08:26:53.6621385Z   Passed: 2 (100.00%)
+Selected unmodified result lines from fork Actions run 36973035391 (full log at https://github.com/1sgtpepper/triton/actions/runs/36973035391).
+atomic	Compile Atomic issue reproducer	2026-10-02T07:15:00.0896623Z ============================== 1 passed in 2.50s ===============================
+atomic	Test Atomic partition fixtures	2026-10-02T07:15:01.1738787Z PASS: TRITON :: Hopper/WarpSpecialization/ws_atomic_rmw_partition_reject.mlir (1 of 2)
+atomic	Test Atomic partition fixtures	2026-10-02T07:15:01.2161449Z PASS: TRITON :: Hopper/WarpSpecialization/ws_atomic_rmw_fallback.mlir (2 of 2)
+atomic	Test Atomic partition fixtures	2026-10-02T07:15:01.2187008Z Total Discovered Tests: 2
+atomic	Test Atomic partition fixtures	2026-10-02T07:15:01.2387400Z   Passed: 2 (100.00%)
+integration	Compile both issue reproducers	2026-10-02T07:13:11.0745157Z ============================== 2 passed in 3.24s ===============================
+integration	Test warp-specialization fixtures	2026-10-02T07:13:12.4619062Z PASS: TRITON :: Hopper/WarpSpecialization/ws_atomic_rmw_preexisting_ids.mlir (1 of 9)
+integration	Test warp-specialization fixtures	2026-10-02T07:13:12.4620257Z PASS: TRITON :: Hopper/WarpSpecialization/ws_atomic_rmw_partition_reject.mlir (2 of 9)
+integration	Test warp-specialization fixtures	2026-10-02T07:13:12.4876903Z PASS: TRITON :: Hopper/WarpSpecialization/ws_code_partition.mlir (3 of 9)
+integration	Test warp-specialization fixtures	2026-10-02T07:13:12.5015835Z PASS: TRITON :: Hopper/WarpSpecialization/ws_data_partition.mlir (4 of 9)
+integration	Test warp-specialization fixtures	2026-10-02T07:13:12.5111283Z PASS: TRITON :: Hopper/WarpSpecialization/ws_gather_preexisting_ids.mlir (5 of 9)
+integration	Test warp-specialization fixtures	2026-10-02T07:13:12.5208249Z PASS: TRITON :: Hopper/WarpSpecialization/ws_atomic_rmw_fallback.mlir (6 of 9)
+integration	Test warp-specialization fixtures	2026-10-02T07:13:12.5245240Z PASS: TRITON :: Hopper/WarpSpecialization/ws_gather_fallback.mlir (7 of 9)
+integration	Test warp-specialization fixtures	2026-10-02T07:13:12.5280819Z PASS: TRITON :: Hopper/WarpSpecialization/ws_task_id_propagation.mlir (8 of 9)
+integration	Test warp-specialization fixtures	2026-10-02T07:13:12.5323428Z PASS: TRITON :: Hopper/WarpSpecialization/ws_task_partition.mlir (9 of 9)
+integration	Test warp-specialization fixtures	2026-10-02T07:13:12.5359082Z Total Discovered Tests: 9
+integration	Test warp-specialization fixtures	2026-10-02T07:13:12.5359433Z   Passed: 9 (100.00%)
+gather	Compile issue reproducer	2026-10-02T07:10:12.4017183Z ============================== 1 passed in 2.11s ===============================
+gather	Test Gather partition fixtures	2026-10-02T07:10:12.8563320Z PASS: TRITON :: Hopper/WarpSpecialization/ws_data_partition.mlir (1 of 2)
+gather	Test Gather partition fixtures	2026-10-02T07:10:12.8681065Z PASS: TRITON :: Hopper/WarpSpecialization/ws_gather_fallback.mlir (2 of 2)
+gather	Test Gather partition fixtures	2026-10-02T07:10:12.8711454Z Total Discovered Tests: 2
+gather	Test Gather partition fixtures	2026-10-02T07:10:12.8711848Z   Passed: 2 (100.00%)
