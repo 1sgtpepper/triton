@@ -50,7 +50,7 @@ jobs:
           build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
           ninja -C "$build_dir" triton-opt
           cd "$build_dir"
-          lit -v test/Hopper/WarpSpecialization/ws_gather_fallback.mlir test/Hopper/WarpSpecialization/ws_data_partition.mlir
+          lit -v test/Hopper/WarpSpecialization/ws_gather_fallback.mlir test/Hopper/WarpSpecialization/ws_gather_preexisting_ids.mlir test/Hopper/WarpSpecialization/ws_data_partition.mlir
 
       - name: Package exact-head wheel
         env:
@@ -105,7 +105,7 @@ jobs:
           build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
           ninja -C "$build_dir" triton-opt
           cd "$build_dir"
-          lit -v test/Hopper/WarpSpecialization/ws_atomic_rmw_fallback.mlir test/Hopper/WarpSpecialization/ws_atomic_rmw_partition_reject.mlir
+          lit -v test/Hopper/WarpSpecialization/ws_atomic_rmw_fallback.mlir test/Hopper/WarpSpecialization/ws_atomic_rmw_partition_reject.mlir test/Hopper/WarpSpecialization/ws_atomic_rmw_preexisting_ids.mlir
 
       - name: Package exact-head wheel
         env:
