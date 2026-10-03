@@ -1,6 +1,6 @@
 # Warp-specialization partition recovery: remote review packet
 
-**Current review:** [October 3 source and validation update](2026-10-03-update.md). The status and revision table below record the earlier October 2 snapshot.
+**Current review:** [October 3 rebased-main source and validation record](2026-10-03-rebased-main.md). The status and revision table below record the earlier October 2 snapshot; the [earlier October 3 update](2026-10-03-update.md) preserves its prior-head investigation.
 
 ## Verdict and provenance
 
