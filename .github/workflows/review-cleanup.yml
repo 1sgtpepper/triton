@@ -1,7 +1,7 @@
-name: Validate scale regression cleanup
+name: Validate sliced scale offsets
 on:
   push:
-    branches: [validation/tmem-review-cleanup-ci]
+    branches: [validation/tmem-current-head-2026-10-21]
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,8 +21,9 @@ jobs:
           path: harness
       - uses: actions/checkout@v4
         with:
-          ref: b45c9f2bb2fedaabee1e0ae6c09aa53725fdb992
+          ref: 77461a2ce83d5102ea6d040671d1dd7fec5b8f64
           path: source
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -30,12 +31,15 @@ jobs:
         with:
           path: ~/.cache/pre-commit
           key: ${{ runner.os }}-${{ hashFiles('source/.pre-commit-config.yaml') }}
+      - name: Check exact source revision
+        working-directory: source
+        run: test "$(git rev-parse HEAD)" = 77461a2ce83d5102ea6d040671d1dd7fec5b8f64
       - name: Check complete PR hooks
         working-directory: source
         run: |
-          git fetch --no-tags --depth=1 origin 43f6091b348e3314b50fd0b47f2e5a9fb9b24d5e
+          git fetch --no-tags --depth=1 origin 0888aa798f997144766676b9026cff1a7e7d8955
           python -m pip install pre-commit
-          mapfile -t changed < <(git diff --name-only 43f6091b348e3314b50fd0b47f2e5a9fb9b24d5e HEAD)
+          mapfile -t changed < <(git diff --name-only 0888aa798f997144766676b9026cff1a7e7d8955 HEAD)
           pre-commit run --show-diff-on-failure --files "${changed[@]}"
       - name: Build current compiler and run repository tests
         working-directory: source
@@ -52,27 +56,14 @@ jobs:
         run: |
           python ../harness/.github/compile_scale_review.py fixed
           git diff --exit-code
+      - name: Package exact-source wheel
+        working-directory: source
+        run: python setup.py bdist_wheel
       - uses: actions/upload-artifact@v4
         with:
-          name: scale-checks-fixed
-          path: source/evidence
-          retention-days: 3
+          name: sliced-scale-current-head
+          path: |
+            source/evidence
+            source/dist/*.whl
+          retention-days: 7
           if-no-files-found: error
-  lifetime-comment:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: 5d44ca489ddd9268fc6a8e8036a967ce469732fb
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/pre-commit
-          key: ${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
-      - run: |
-          python -m pip install pre-commit
-          pre-commit run --show-diff-on-failure --files lib/Dialect/TritonNvidiaGPU/Transforms/TensorMemoryAllocation.cpp
-          git diff --exit-code
