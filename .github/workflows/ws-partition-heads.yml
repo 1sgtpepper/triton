@@ -3,7 +3,9 @@ name: Warp partition head validation
 on:
   push:
     branches:
-      - validation/warp-partition-heads-2026-10-21
+      - validation/ws-partition-heads-2026-10-03
+
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,6 +14,12 @@ jobs:
   gather:
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    env:
+      MAX_JOBS: '2'
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      TRITON_BUILD_WITH_CLANG_LLD: '1'
+      TRITON_BUILD_PROTON: 'OFF'
+      TRITON_APPEND_CMAKE_ARGS: '-DTRITON_BUILD_UT=ON'
 
     steps:
       - name: Check out Gather PR head
@@ -40,7 +48,12 @@ jobs:
       - name: Build compiler
         env:
           MAX_JOBS: '2'
-        run: make dev-install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          python3 -m pip install setuptools==84.0.0 cmake==3.31.10 ninja==1.13.2 nanobind==2.10.2 wheel==0.48.0 packaging==26.3 lit pytest
+          python3 -m pip install --no-build-isolation --no-deps -e . -v
+          make
 
       - name: Compile Gather reproducer
         run: python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py::test_compile_only_ws_gather_falls_back
@@ -51,6 +64,13 @@ jobs:
           ninja -C "$build_dir" triton-opt
           cd "$build_dir"
           lit -v test/Hopper/WarpSpecialization/ws_gather_fallback.mlir test/Hopper/WarpSpecialization/ws_gather_fallback_debug.mlir test/Hopper/WarpSpecialization/ws_gather_preexisting_ids.mlir test/Hopper/WarpSpecialization/ws_data_partition.mlir
+
+      - name: Check optional debug output in the assertions build
+        run: |
+          build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
+          "$build_dir/bin/triton-opt" test/Hopper/WarpSpecialization/ws_gather_fallback.mlir --nvgpu-warp-specialization=num-stages=2 --debug-only=nvgpu-ws-data-partition > /tmp/gather-debug.log 2>&1
+          grep -Fq 'dim <unassigned>' /tmp/gather-debug.log
+          grep -Fq '@gather_after_loop_falls_back' /tmp/gather-debug.log
 
       - name: Package exact-head wheel
         env:
@@ -67,6 +87,12 @@ jobs:
   atomic:
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    env:
+      MAX_JOBS: '2'
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      TRITON_BUILD_WITH_CLANG_LLD: '1'
+      TRITON_BUILD_PROTON: 'OFF'
+      TRITON_APPEND_CMAKE_ARGS: '-DTRITON_BUILD_UT=ON'
 
     steps:
       - name: Check out Atomic PR head
@@ -95,7 +121,12 @@ jobs:
       - name: Build compiler
         env:
           MAX_JOBS: '2'
-        run: make dev-install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          python3 -m pip install setuptools==84.0.0 cmake==3.31.10 ninja==1.13.2 nanobind==2.10.2 wheel==0.48.0 packaging==26.3 lit pytest
+          python3 -m pip install --no-build-isolation --no-deps -e . -v
+          make
 
       - name: Compile Atomic reproducer
         run: python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py::test_compile_only_ws_atomic_rmw_falls_back
