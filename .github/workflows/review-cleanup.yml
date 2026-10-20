@@ -1,7 +1,7 @@
 name: Validate sliced scale offsets
 on:
   push:
-    branches: [validation/tmem-review-cleanup-ci]
+    branches: [validation/tmem-current-head-2026-10-21]
   workflow_dispatch:
 permissions:
   contents: read
