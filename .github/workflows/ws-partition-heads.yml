@@ -3,7 +3,7 @@ name: Warp partition head validation
 on:
   push:
     branches:
-      - validation/ws-partition-heads-2026-10-03
+      - validation/warp-partition-heads-2026-10-21
 
   workflow_dispatch:
 
@@ -19,6 +19,7 @@ jobs:
       CMAKE_BUILD_PARALLEL_LEVEL: '2'
       TRITON_BUILD_WITH_CLANG_LLD: '1'
       TRITON_BUILD_PROTON: 'OFF'
+      TRITON_REL_BUILD_WITH_ASSERTS: '1'
       TRITON_APPEND_CMAKE_ARGS: '-DTRITON_BUILD_UT=ON'
 
     steps:
@@ -26,13 +27,13 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: 1sgtpepper/triton
-          ref: b3932c80d6d95a47cb3f241136a03b20ce8d2615
+          ref: 19d453a31a71f444694a7413e0ef69115d3934ca
           submodules: true
           persist-credentials: false
           fetch-depth: 0
 
       - name: Check exact revision
-        run: test "$(git rev-parse HEAD)" = b3932c80d6d95a47cb3f241136a03b20ce8d2615
+        run: test "$(git rev-parse HEAD)" = 19d453a31a71f444694a7413e0ef69115d3934ca
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -63,7 +64,7 @@ jobs:
           build_dir="$(PYTHONPATH=python python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')"
           ninja -C "$build_dir" triton-opt
           cd "$build_dir"
-          lit -v test/Hopper/WarpSpecialization/ws_gather_fallback.mlir test/Hopper/WarpSpecialization/ws_gather_fallback_debug.mlir test/Hopper/WarpSpecialization/ws_gather_preexisting_ids.mlir test/Hopper/WarpSpecialization/ws_data_partition.mlir
+          lit -v test/Hopper/WarpSpecialization/ws_gather_fallback.mlir test/Hopper/WarpSpecialization/ws_gather_preexisting_ids.mlir test/Hopper/WarpSpecialization/ws_data_partition.mlir
 
       - name: Check optional debug output in the assertions build
         run: |
