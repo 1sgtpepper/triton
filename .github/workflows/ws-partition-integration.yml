@@ -3,7 +3,9 @@ name: Warp partition integration validation
 on:
   push:
     branches:
-      - validation/ws-partition-integration-ci-2026-10-03
+      - validation/warp-partition-integration-ci-2026-10-21
+
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,19 +14,25 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    env:
+      MAX_JOBS: '2'
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      TRITON_BUILD_WITH_CLANG_LLD: '1'
+      TRITON_BUILD_PROTON: 'OFF'
+      TRITON_APPEND_CMAKE_ARGS: '-DTRITON_BUILD_UT=ON'
 
     steps:
       - name: Check out integrated revision
         uses: actions/checkout@v6
         with:
           repository: 1sgtpepper/triton
-          ref: 3b24e16778e657e42644abebb207ce9753ac6874
+          ref: 63337172e96e6e517d9161d45194ca8b70899e9d
           submodules: true
           persist-credentials: false
           fetch-depth: 0
 
       - name: Check exact revision
-        run: test "$(git rev-parse HEAD)" = 3b24e16778e657e42644abebb207ce9753ac6874
+        run: test "$(git rev-parse HEAD)" = 63337172e96e6e517d9161d45194ca8b70899e9d
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -34,13 +42,18 @@ jobs:
       - name: Check repository hooks
         run: |
           python3 -m pip install pre-commit==4.0.1
-          pre-commit run --from-ref 88771e23f88b3e515cdcf585c4675248101ce72e --to-ref HEAD --show-diff-on-failure
+          pre-commit run --from-ref 23d6832c426e79a9b269d6252b11f17041bd35b5 --to-ref HEAD --show-diff-on-failure
           git diff --exit-code
 
       - name: Build compiler
         env:
           MAX_JOBS: '2'
-        run: make dev-install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          python3 -m pip install setuptools==84.0.0 cmake==3.31.10 ninja==1.13.2 nanobind==2.10.2 wheel==0.48.0 packaging==26.3 lit pytest
+          python3 -m pip install --no-build-isolation --no-deps -e . -v
+          make
 
       - name: Compile both reproducers
         run: python3 -m pytest -s --tb=short python/test/unit/language/test_compile_only.py::test_compile_only_ws_gather_falls_back python/test/unit/language/test_compile_only.py::test_compile_only_ws_atomic_rmw_falls_back
