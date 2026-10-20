@@ -21,7 +21,7 @@ jobs:
           path: harness
       - uses: actions/checkout@v4
         with:
-          ref: 77461a2ce83d5102ea6d040671d1dd7fec5b8f64
+          ref: 09123645142e25a7e4d270be0514467ee233d6fc
           path: source
           persist-credentials: false
       - uses: actions/setup-python@v5
@@ -33,13 +33,13 @@ jobs:
           key: ${{ runner.os }}-${{ hashFiles('source/.pre-commit-config.yaml') }}
       - name: Check exact source revision
         working-directory: source
-        run: test "$(git rev-parse HEAD)" = 77461a2ce83d5102ea6d040671d1dd7fec5b8f64
+        run: test "$(git rev-parse HEAD)" = 09123645142e25a7e4d270be0514467ee233d6fc
       - name: Check complete PR hooks
         working-directory: source
         run: |
-          git fetch --no-tags --depth=1 origin 0888aa798f997144766676b9026cff1a7e7d8955
+          git fetch --no-tags --depth=1 origin 23d6832c426e79a9b269d6252b11f17041bd35b5
           python -m pip install pre-commit
-          mapfile -t changed < <(git diff --name-only 0888aa798f997144766676b9026cff1a7e7d8955 HEAD)
+          mapfile -t changed < <(git diff --name-only 23d6832c426e79a9b269d6252b11f17041bd35b5 HEAD)
           pre-commit run --show-diff-on-failure --files "${changed[@]}"
       - name: Build current compiler and run repository tests
         working-directory: source
