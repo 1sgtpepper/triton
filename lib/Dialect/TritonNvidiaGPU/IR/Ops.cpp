@@ -434,6 +434,12 @@ static LogicalResult canonicalizeBarrierFromCTA(BarrierOp op,
 LogicalResult BarrierExpectOp::verify() {
   if (failed(verifyBarrierFromCTA(*this, getAlloc(), getFromCTA())))
     return failure();
+  if (getPerWarp()) {
+    int numWarps = gpu::lookupNumWarps(*this);
+    if (numWarps <= 1 || getSize() % numWarps != 0)
+      return emitOpError("per_warp requires multiple warps and size divisible "
+                         "by the warp count");
+  }
   return success();
 }
 
@@ -445,6 +451,8 @@ LogicalResult BarrierExpectOp::canonicalize(BarrierExpectOp op,
 }
 
 TypedValue<MemDescType> BarrierExpectOp::getBarrier() { return getAlloc(); }
+
+bool BarrierExpectOp::isPerWarp() { return getPerWarp(); }
 
 Value BarrierExpectOp::getPredicateOperand() { return getPred(); }
 
@@ -485,6 +493,8 @@ static LogicalResult verifyBarrierCGALayout(Operation *op, Value barrier,
 LogicalResult ArriveBarrierOp::verify() {
   if (getCount() < 1)
     return emitOpError("count must be greater than or equal to 1");
+  if (getPerWarp() && gpu::lookupNumWarps(*this) <= 1)
+    return emitOpError("per_warp requires multiple warps");
   if (isMulticast()) {
     int numCTAs = triton::gpu::lookupNumCTAs(getOperation());
     if (numCTAs <= 1)
@@ -513,6 +523,8 @@ LogicalResult ArriveBarrierOp::canonicalize(ArriveBarrierOp op,
 }
 
 TypedValue<MemDescType> ArriveBarrierOp::getBarrier() { return getAlloc(); }
+
+bool ArriveBarrierOp::isPerWarp() { return getPerWarp(); }
 
 Value ArriveBarrierOp::getPredicateOperand() { return getPred(); }
 
@@ -1357,7 +1369,7 @@ static LogicalResult verifyScaledLHSOperand(Operation *op, Type elementType,
                                             ScaleDotElemType aType,
                                             ScaleDotElemType bType) {
   if (aType == ScaleDotElemType::E2M1) {
-    if (!elementType.isInteger(8))
+    if (!elementType.isInteger(8) && !isa<PackedFloat4E2M1Type>(elementType))
       return op->emitOpError("expected e2m1 LHS operand to have i8 storage");
     if (encoding.getFp4Padded() &&
         !llvm::is_contained({ScaleDotElemType::E4M3, ScaleDotElemType::E5M2},
@@ -1846,7 +1858,7 @@ LogicalResult TMEMCopyOp::verify() {
       return emitOpError("Source layout should be swizzled.");
     }
     // When we lift this, we should make sure we handle unpacked cleanly
-    if (srcTy.getElementType().getIntOrFloatBitWidth() != 32) {
+    if (getIntOrFloatOrPtrBitWidth(srcTy.getElementType()) != 32) {
       return emitOpError("Source element type should be 32-bit.");
     }
     auto kCol = StringAttr::get(getContext(), "col");

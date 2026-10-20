@@ -30,6 +30,11 @@ def get_amd_codegen_path() -> str:
     return str(Path(__file__).parent / "lib" / library)
 
 
+def get_amd_bitcode_path(name: str) -> str:
+    libdir = Path(knobs.amd.bitcode_path) if knobs.amd.bitcode_path else Path(__file__).parent / "lib"
+    return str(libdir / f"{name}.bc")
+
+
 class _AMDGPUCodegenOptions(ctypes.Structure):
     _fields_ = [
         ("abi_version", ctypes.c_uint32),
@@ -91,40 +96,15 @@ def get_amd_codegen_target_triple(arch: str) -> str:
     return amd.get_target_triple(arch)
 
 
-_NAMED_BARRIER_INTRINSICS = (
-    "llvm.amdgcn.s.barrier.init",
-    "llvm.amdgcn.s.barrier.signal.var",
-    "llvm.amdgcn.s.barrier.join",
-    "llvm.amdgcn.s.wakeup.barrier",
-    "llvm.amdgcn.s.get.named.barrier.state",
-)
-
-
-def _upgrade_legacy_named_barrier_address_spaces(src: str) -> str:
-    upgraded = src.replace('addrspace(3) global target("amdgcn.named.barrier"',
-                           'addrspace(15) global target("amdgcn.named.barrier"')
-    for intrinsic in _NAMED_BARRIER_INTRINSICS:
-        upgraded = upgraded.replace(f"@{intrinsic}(ptr addrspace(3)", f"@{intrinsic}(ptr addrspace(15)")
-    return upgraded
-
-
 def compile_amdgpu(src: str, triple: str, processor: str, features: str, *, flags: list[str], enable_fp_fusion: bool,
                    disable_optimization: bool, canonicalize_gep: bool, disabled_passes: str, dump_ir: bool,
                    enable_timing: bool) -> str:
     library = _load_amd_codegen(get_amd_codegen_path())
-    upgraded_src = _upgrade_legacy_named_barrier_address_spaces(src)
-    if upgraded_src == src:
-        # Serialize with Triton's LLVM: newer backends support older bitcode,
-        # whereas textual IR has no backwards-compatibility guarantee.
-        # Express fusion permission in the IR because newer LLVM versions no
-        # longer honor TargetOptions::AllowFPOpFusion during code generation.
-        llvm_ir = llvm.to_bitcode(src, enable_fp_fusion)
-    else:
-        # LLVM commit 5bf967cb132b changed named-barrier intrinsic operands from
-        # address space 3 to 15. The bitcode reader rejects the legacy signature
-        # before the standalone code generator can upgrade the module, so send
-        # the narrowly upgraded module as text.
-        llvm_ir = upgraded_src.encode("utf-8")
+    # Serialize with Triton's LLVM: newer backends support older bitcode,
+    # whereas textual IR has no backwards-compatibility guarantee.
+    # Express fusion permission in the IR because newer LLVM versions no
+    # longer honor TargetOptions::AllowFPOpFusion during code generation.
+    llvm_ir = llvm.to_bitcode(src, enable_fp_fusion)
     options = _AMDGPUCodegenOptions(
         1,
         triple.encode("utf-8"),
@@ -216,18 +196,21 @@ def is_expert_scheduling_enabled(base_arch):
     return base_arch == "gfx1250"
 
 
-def get_llvm_flags(arch):
+def get_llvm_flags(options):
     """LLVM command line flags for every LLVM pipeline run of a compilation.
 
-    These are process-wide LLVM options: compilations sharing a process can only
-    run in parallel while they use identical flags. Prefer per-function LLVM
-    attributes (see make_llir) whenever LLVM offers one.
+    Each flag is either a bare option name, which is set to true, or
+    "name=value". These are process-wide LLVM options: compilations sharing a
+    process can only run in parallel while they use identical flags. Prefer
+    per-function LLVM attributes (see make_llir) whenever LLVM offers one.
     """
     flags = []
     # Discourage VGPR reuse that creates VALU-to-DS WAR hazards and requires
     # s_wait_alu va_vdst waits in expert scheduling mode.
-    if arch == "gfx1250" and is_expert_scheduling_enabled(arch):
+    if options.arch == "gfx1250" and is_expert_scheduling_enabled(options.arch):
         flags.append("amdgpu-anti-hints-for-va-vdst")
+    # User-requested options come last so they override the defaults above.
+    flags.extend(f"{name}={value}" for name, value in options.llvm_cl_opts)
     return flags
 
 
@@ -239,7 +222,7 @@ def is_consan_supported(base_arch):
     return base_arch == "gfx1250"
 
 
-def _parse_llvm_fn_attrs(attrs):
+def _parse_llvm_key_values(attrs, bare_value=""):
     if not isinstance(attrs, str):
         return tuple(attrs)
     parsed = []
@@ -247,7 +230,7 @@ def _parse_llvm_fn_attrs(attrs):
         name, sep, value = attr.partition("=")
         name = name.strip()
         if name:
-            parsed.append((name, value.strip() if sep else ""))
+            parsed.append((name, value.strip() if sep else bare_value))
     return tuple(parsed)
 
 
@@ -284,9 +267,16 @@ class HIPOptions:
     backend_name: str = 'hip'
     instrumentation_mode: str = ""
     fpsan_homomorphic_casts: bool = False
+    # WGP/CU execution mode for gfx11 and gfx120x; ignored on other targets.
+    wgp_cu_mode: str = "wgp"
 
-    # The following option provides hints to the AMDGPU backend regarding instruction scheduling
-    # for all `tt.dot` operations in a kernel. Experimental; right now no effect.
+    # Experimental hint for how the AMD backend schedules a kernel's instructions. The only
+    # recognized value is "mfma-schedule" (gfx942 and gfx950): run the MFMA scheduler on the optimized
+    # LLVM IR. It interleaves the MFMAs of each hot loop with the memory operations that are
+    # independent of them, keeping the matrix unit busy, and pins that order with
+    # llvm.amdgcn.sched.barrier so LLVM's machine schedulers preserve it. Kernels without an
+    # eligible loop are left untouched. MFMA accumulators pinned with `cd_regclass` keep their
+    # pins next to the moved MFMAs.
     schedule_hint: str = ''
 
     # Experimental: intended for development and debugging; may change or be removed without notice.
@@ -294,8 +284,11 @@ class HIPOptions:
     # Example: llvm_fn_attrs="amdgpu-sched-strategy=iterative-ilp,noinline"
     llvm_fn_attrs: str | Tuple[Tuple[str, str], ...] = ""
 
-    # WGP/CU execution mode for gfx10, gfx11 and gfx120x; ignored on other targets.
-    wgp_cu_mode: str = "wgp"
+    # Experimental: intended for development and debugging; may change or be removed without notice.
+    # Comma-separated LLVM command line options applied to every LLVM pipeline run of this kernel;
+    # bare names are set to true. Option names omit the leading dash.
+    # Example: llvm_cl_opts="enable-gvn-hoist,unroll-threshold=150"
+    llvm_cl_opts: str | Tuple[Tuple[str, str], ...] = ""
 
     def __post_init__(self):
         if self.wgp_cu_mode not in ("wgp", "cu"):
@@ -315,12 +308,12 @@ class HIPOptions:
             )
             object.__setattr__(self, 'kpack', 1)
 
-        object.__setattr__(self, 'llvm_fn_attrs', _parse_llvm_fn_attrs(self.llvm_fn_attrs))
+        object.__setattr__(self, 'llvm_fn_attrs', _parse_llvm_key_values(self.llvm_fn_attrs))
+        object.__setattr__(self, 'llvm_cl_opts', _parse_llvm_key_values(self.llvm_cl_opts, bare_value="true"))
 
-        default_libdir = Path(__file__).parent / 'lib'
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
         for lib in ["ocml", "ockl"]:
-            extern_libs[lib] = str(default_libdir / f'{lib}.bc')
+            extern_libs[lib] = get_amd_bitcode_path(lib)
         object.__setattr__(self, 'extern_libs', tuple(extern_libs.items()))
 
     def hash(self):
@@ -360,6 +353,8 @@ class HIPBackend(BaseBackend):
             opts["sanitize_overflow"] = False
 
         args = {'arch': knobs.runtime.override_arch or self.target.arch}
+        if opts.get("schedule_hint", "") not in ("", "mfma-schedule"):
+            raise ValueError(f"schedule_hint: unknown value {opts['schedule_hint']!r}; supported: 'mfma-schedule'")
 
         if opts.get("num_ctas", 1) > 1 and not amd.supports_multi_cta_launch(self.target.arch):
             raise ValueError(f"num_ctas > 1 not supported on {self.target.arch}")
@@ -582,7 +577,7 @@ class HIPBackend(BaseBackend):
         ## 3. __HIP_FTZ is default to 1 and not exposed as a kernel argument.
         ##    For now it is used as a controller for developers only.
         __HIP_FTZ = True
-        amd.passes.ttgpuir.add_to_llvmir(pm, options.arch, __HIP_FTZ)
+        amd.passes.ttgpuir.add_to_llvmir(pm, options.arch, __HIP_FTZ, options.wgp_cu_mode == "cu")
         # Lower Proton segment values before warp specialization captures partition operands.
         instrument(pm, point="llvmir-to-llvm", context=mod.context)
         amd.passes.ttgpuir.add_warp_specialize_to_llvm(pm, options.arch)
@@ -614,7 +609,7 @@ class HIPBackend(BaseBackend):
             # insert dbg intrinsic with several DI Attribute including source
             # var name and type info note: unknown reason for now, but this
             # pass and add_di_scope has to be run separately, otherwise if we
-            # put them into previous pipline, it trigger a segmentfault without
+            # put them into previous pipeline, it trigger a segmentfault without
             # any error message; could be due to a bug in mlir or pybind11
             pm = ir.pass_manager(mod.context)
             pm.enable_debug()
@@ -637,7 +632,7 @@ class HIPBackend(BaseBackend):
         target_features = ''
         if knobs.compilation.enable_asan:
             target_features = '+xnack'
-        llvm.attach_datalayout(llvm_mod, layout_triple, core_llvm_arch, target_features, get_llvm_flags(options.arch))
+        llvm.attach_datalayout(llvm_mod, layout_triple, core_llvm_arch, target_features, get_llvm_flags(options))
 
         # Set various control constants on the LLVM module so that device
         # libraries can resolve references to them.
@@ -683,9 +678,6 @@ class HIPBackend(BaseBackend):
         if knobs.compilation.enable_asan:
             kernel_fn.add_fn_target_feature("+xnack")
             kernel_fn.add_fn_asan_attr()
-        for name, value in options.llvm_fn_attrs:
-            kernel_fn.remove_fn_attr(name)
-            kernel_fn.add_fn_attr(name, value)
         if options.wgp_cu_mode == "cu":
             if knobs.compilation.enable_asan:
                 raise ValueError("wgp_cu_mode='cu' is not supported together with TRITON_ENABLE_ASAN")
@@ -703,12 +695,7 @@ class HIPBackend(BaseBackend):
             amd.set_all_fn_arg_inreg(kernel_fn)
 
         if knobs.compilation.enable_asan:
-            default_libdir = Path(__file__).parent / 'lib'
-            paths = [
-                str(default_libdir / 'asanrtl.bc'),
-                str(default_libdir / "ocml.bc"),
-                str(default_libdir / "ockl.bc")
-            ]
+            paths = [get_amd_bitcode_path(name) for name in ("asanrtl", "ocml", "ockl")]
             llvm.link_extern_libs(llvm_mod, paths)
         elif options.extern_libs:
             paths = [path for (name, path) in options.extern_libs if amd.need_extern_lib(llvm_mod, name)]
@@ -722,7 +709,13 @@ class HIPBackend(BaseBackend):
                 if not fn.is_declaration():
                     fn.add_fn_attr("amdgpu-expert-scheduling-mode", "true")
 
-        llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3, core_llvm_arch, '', get_llvm_flags(options.arch),
+        # Apply user-provided attributes after every attribute managed above so
+        # that they take precedence.
+        for name, value in options.llvm_fn_attrs:
+            kernel_fn.remove_fn_attr(name)
+            kernel_fn.add_fn_attr(name, value)
+
+        llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3, core_llvm_arch, '', get_llvm_flags(options),
                              options.enable_fp_fusion, disable_vector_combine=True)
         if target_triple != layout_triple:
             amd.set_target_triple(llvm_mod, target_triple)
@@ -731,13 +724,17 @@ class HIPBackend(BaseBackend):
         # These attributes are used to determine if Z should be masked out when loading Y. They are inferred during
         # optimize_module from calls to @llvm.amdgcn.workgroup.id.x/y/z(). We cannot rely on this because a
         # dispatch dimensions might be used even if there is no program_id() call for it.
+        # Attributes provided through llvm_fn_attrs are kept.
         if amd.has_architected_sgprs(layout_triple, core_llvm_arch):
-            kernel_fn.remove_fn_attr("amdgpu-no-workgroup-id-x")
-            kernel_fn.remove_fn_attr("amdgpu-no-workgroup-id-y")
-            kernel_fn.remove_fn_attr("amdgpu-no-workgroup-id-z")
+            user_attrs = {name for name, _ in options.llvm_fn_attrs}
+            for dim in "xyz":
+                attr = f"amdgpu-no-workgroup-id-{dim}"
+                if attr not in user_attrs:
+                    kernel_fn.remove_fn_attr(attr)
 
-        if knobs.amd.scalarize_packed_fops:
-            amd.add_scalarize_packed_fops_llvm_pass(kernel_fn)
+        # Opt-in MFMA scheduler, see the schedule_hint option (validated in parse_options).
+        if options.schedule_hint == "mfma-schedule" and options.arch in ("gfx942", "gfx950"):
+            amd.add_mfma_schedule_pass(kernel_fn, options.arch)
 
         # Get some metadata
         metadata["num_warps"] = total_warps_num
@@ -765,7 +762,7 @@ class HIPBackend(BaseBackend):
         assert len(names) == 1
         metadata["name"] = names[0]
         # llvm -> hsaco
-        flags = get_llvm_flags(options.arch)
+        flags = get_llvm_flags(options)
         features = ''
         target_triple = get_amd_codegen_target_triple(options.arch)
         ir_hash = hashlib.sha256(src.encode("utf-8")).hexdigest()
