@@ -27,13 +27,13 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: 1sgtpepper/triton
-          ref: 248f105ecf1402d970c481787738013da11b5837
+          ref: e9705bc796032c23434cd23e51f438b84065c115
           submodules: true
           persist-credentials: false
           fetch-depth: 0
 
       - name: Check exact revision
-        run: test "$(git rev-parse HEAD)" = 248f105ecf1402d970c481787738013da11b5837
+        run: test "$(git rev-parse HEAD)" = e9705bc796032c23434cd23e51f438b84065c115
 
       - name: Set up Python
         uses: actions/setup-python@v7
