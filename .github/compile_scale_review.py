@@ -23,11 +23,11 @@ for mode in ([variant,"permuted"] if variant == "fixed" else [variant]):
     spec=importlib.util.spec_from_file_location("scale_"+mode,module_path);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     for i, case in enumerate(cases):
         if mode=="permuted" and i!=4:continue
-        m,k,parent_m,compact,use_acc,offset=case
-        constants=dict(M=m,K=k,PARENT_M=parent_m,COMPACT=compact,USE_ACC=use_acc,OFFSET=offset)
+        m,k,parent_m,compact,offset=case
+        constants=dict(M=m,K=k,PARENT_M=parent_m,COMPACT=compact,OFFSET=offset)
         compiled=triton.compile(GluonASTSource(module.kernel,signature=dict(out="*fp32",**{k:"constexpr" for k in constants}),constexprs=constants),target=GPUTarget("cuda",100,32),options={"num_warps":4})
         name=mode+"-"+str(i);cubin=compiled.asm["cubin"];(root/(name+".cubin")).write_bytes(cubin);(root/(name+".ptx")).write_text(compiled.asm["ptx"])
-        oracle=eval(compile(ast.Expression(expected),"<test oracle>","eval"),dict(M=m,K=k,offset=offset,use_acc=use_acc))
+        oracle=eval(compile(ast.Expression(expected),"<test oracle>","eval"),dict(M=m,K=k,offset=offset))
         records.append(dict(name=name,case=case,kernel=compiled.name,metadata=compiled.metadata._asdict(),sha256=hashlib.sha256(cubin).hexdigest(),expected=oracle))
         print(name,compiled.name,compiled.metadata.shared,flush=True)
 (root/(variant+".json")).write_text(json.dumps(records,indent=2,default=str))

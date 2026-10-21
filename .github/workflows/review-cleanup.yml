@@ -21,7 +21,7 @@ jobs:
           path: harness
       - uses: actions/checkout@v4
         with:
-          ref: 09123645142e25a7e4d270be0514467ee233d6fc
+          ref: 6da7893a41e1cc96d1db4e196b2bad753b92bd36
           path: source
           persist-credentials: false
       - uses: actions/setup-python@v5
@@ -33,7 +33,7 @@ jobs:
           key: ${{ runner.os }}-${{ hashFiles('source/.pre-commit-config.yaml') }}
       - name: Check exact source revision
         working-directory: source
-        run: test "$(git rev-parse HEAD)" = 09123645142e25a7e4d270be0514467ee233d6fc
+        run: test "$(git rev-parse HEAD)" = 6da7893a41e1cc96d1db4e196b2bad753b92bd36
       - name: Check complete PR hooks
         working-directory: source
         run: |
