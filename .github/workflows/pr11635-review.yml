@@ -1,0 +1,69 @@
+name: PR 11635 exact candidate validation
+on:
+  push:
+    branches: [validation/pr11635-holistic-20261025]
+permissions:
+  contents: read
+jobs:
+  compiler:
+    if: github.repository == '1sgtpepper/triton'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      MAX_JOBS: "2"
+      CMAKE_BUILD_PARALLEL_LEVEL: "2"
+      TRITON_BUILD_WITH_CLANG_LLD: "true"
+      TRITON_BUILD_PROTON: "OFF"
+      TRITON_APPEND_CMAKE_ARGS: "-DTRITON_BUILD_UT=ON -DLLVM_LIT_ARGS=-j2"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: 1sgtpepper/triton
+          ref: d4d954b48e5580c0672b8f4390f20e925f3f4b3e
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify candidate identity
+        working-directory: source
+        run: |
+          test "$(git rev-parse HEAD)" = d4d954b48e5580c0672b8f4390f20e925f3f4b3e
+          git diff --exit-code
+      - name: Install build dependencies
+        working-directory: source
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          python -m pip install -r python/requirements.txt pytest numpy pre-commit packaging
+      - name: Run repository hooks
+        working-directory: source
+        run: pre-commit run --show-diff-on-failure --files python/test/gluon/test_core.py third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/DotOpToLLVM/MMAv5.cpp
+      - name: Build exact candidate
+        working-directory: source
+        run: |
+          python -m pip install --no-build-isolation --no-deps -e . -v
+          make
+          python -c 'import triton; print(triton.__version__, triton.__file__)'
+          sha256sum python/triton/_C/libtriton.so
+      - name: Run compiler suites
+        working-directory: source
+        run: |
+          build_dir=$(PYTHONPATH=./python python -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')
+          ninja -C "$build_dir" -j2 check-triton-lit-tests check-triton-unit-tests
+      - name: Compile exact regression fixtures and audit CPU oracles
+        working-directory: source
+        run: |
+          python ../harness/.github/pr11635_review_compile.py --output ../evidence
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr11635-review-evidence
+          path: evidence
+          if-no-files-found: ignore
+          retention-days: 7
