@@ -1,5 +1,6 @@
 name: PR 11635 exact candidate validation
 on:
+  workflow_dispatch:
   push:
     branches: [validation/pr11635-holistic-20261025]
 permissions:
